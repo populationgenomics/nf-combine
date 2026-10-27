@@ -29,7 +29,6 @@ from argparse import ArgumentParser
 from cloudpathlib.anypath import to_anypath
 from pathlib import Path
 
-# todo
 from cpg_utils.existence_checks import exists
 from metamist.graphql import gql, query
 
@@ -60,7 +59,7 @@ query BuildCombineSamplesheet($project: String!, $cohorts: [String!]!) {
         }
     }
     project(name: $project) {
-        analyses(type: {eq: "vds"}, active: {eq: true}) {
+        analyses(type: {eq: "combiner"}, active: {eq: true}) {
             id
             outputs
             meta
@@ -73,6 +72,7 @@ query BuildCombineSamplesheet($project: String!, $cohorts: [String!]!) {
 class SamplesheetError(Exception):
     """Raised for invalid cohorts, or for SGs without exactly one gVCF."""
 
+
 def analysis_path(analysis: dict) -> str | None:
     """Gets the path of a Metamist analysis entry.
 
@@ -82,7 +82,9 @@ def analysis_path(analysis: dict) -> str | None:
     Returns:
         The entry's outputs.path, else its output, else None.
     """
-    return analysis.get('outputs', {}).get('path', analysis.get('output'))
+    if isinstance(analysis.get('outputs'), str) or analysis.get('outputs') is None:
+        return None
+    return analysis['outputs'].get('path')
 
 
 def dataset_of(project: str) -> str:
@@ -154,7 +156,7 @@ def build_rows(cohorts: list[dict], sequencing_type: str) -> list[dict]:
     if errors:
         raise SamplesheetError('\n'.join(errors))
     if not rows:
-        raise SamplesheetError(f'No {sequencing_type} sequencing groups to combine')
+        raise SamplesheetError(f'No {sequencing_type} sequencing groups to combine.')
     return sorted(rows, key=lambda row: row['sg_id'])
 
 
@@ -176,18 +178,6 @@ def newest_vds(analyses: list[dict], sequencing_type: str) -> str | None:
     if not candidates:
         return None
     return analysis_path(max(candidates, key=lambda analysis: analysis['id']))
-
-
-def registered_vdss(analyses: list[dict]) -> list[str]:
-    """Lists every active VDS path in the project, whatever its sequencing type.
-
-    Args:
-        analyses: The project's active 'vds' analyses.
-
-    Returns:
-        The distinct VDS paths, sorted.
-    """
-    return sorted({path for analysis in analyses if (path := analysis_path(analysis))})
 
 
 def vds_name(sg_ids: list[str], refresh: list[str]) -> str:
@@ -248,7 +238,29 @@ def validate_file_existence(output_rows: list[dict], base_vds: str | None) -> No
         raise FileNotFoundError('\n'.join(errors))
 
 
-def main(project: str, sequencing_type: str, cohort_ids: list[str], refresh: list[str], outdir: str) -> None:
+def check_missing_refresh(input_sgids: set[str], refresh_sgids: list[str]) -> None:
+    """
+    Checks that all SG IDs to be 'refreshed' are present in inputs.
+    Args:
+        input_sgids: all SG IDs colleted from input Cohorts.
+        refresh_sgids: all SG IDs to be refreshed.
+
+    Raises:
+        SampleSheetError: If any refresh SG ID is not in the input Cohorts.
+    """
+
+    if fresh := (refresh_sgids - input_sgids):
+        raise SamplesheetError(f'{len(fresh)} SG IDs were due to be refreshed, but were not in input Cohort(s).')
+
+
+def main(
+    project: str,
+    sequencing_type: str,
+    cohort_ids: list[str],
+    refresh: list[str],
+    outdir: str,
+    base_vds: str | None = None,
+) -> None:
     """Builds the sample sheet, and writes it with the base and registered VDS lists.
 
     Args:
@@ -257,24 +269,28 @@ def main(project: str, sequencing_type: str, cohort_ids: list[str], refresh: lis
         cohort_ids: The cohorts to combine; duplicates are ignored.
         refresh: SG IDs to refresh; they change the VDS name.
         outdir: Where to write the sheet, base_vds.txt and registered_vds.txt.
+        base_vds: Optiona, base VDs to build on. Skips relevant metamist queries.
     """
     cohort_ids = sorted(set(cohort_ids))
     result = query(gql(COHORTS_QUERY), variables={'project': project, 'cohorts': cohort_ids})
     check_cohorts(cohort_ids, result['cohorts'])
     rows = build_rows(result['cohorts'], sequencing_type)
 
-    base = newest_vds(result['project']['analyses'], sequencing_type)
+    base = base_vds or newest_vds(result['project']['analyses'], sequencing_type)
 
     # check for existence of each assay and reference
     validate_file_existence(rows, base)
 
-    registered = registered_vdss(result['project']['analyses'])
-
+    # generate a hash from the SG IDs, and optionally IDs to refresh (prevents name collision)
     name = vds_name([row['sg_id'] for row in rows], refresh)
+
+    # check that all SG IDs due to be refreshed are present in inputs
+    check_missing_refresh({row['sg_id'] for row in rows}, refresh)
+
     out = to_anypath(outdir)
+
     write_sheet(rows, out / f'{name}.tsv')
     (out / 'base_vds.txt').write_text(f'{base}\n' if base else '')
-    (out / 'registered_vds.txt').write_text(''.join(f'{path}\n' for path in registered))
     n_datasets = len({row['dataset'] for row in rows})
     logger.info(f'{project} {sequencing_type}: {len(rows)} SGs from {n_datasets} dataset(s) -> {name}, base: {base}')
 
@@ -287,5 +303,6 @@ if __name__ == '__main__':
     parser.add_argument('--cohorts', required=True, nargs='+', help='Metamist cohort IDs')
     parser.add_argument('--refresh', nargs='*', default=[], help='SG IDs to refresh; they change the VDS name')
     parser.add_argument('--outdir', default='.', help='Where to write the sheet and the VDS lists')
+    parser.add_argument('--base-vds', default=None, help='A base VDS to build on, skips queries.')
     args = parser.parse_args()
-    main(args.project, args.sequencing_type, args.cohorts, args.refresh, args.outdir)
+    main(args.project, args.sequencing_type, args.cohorts, args.refresh, args.outdir, args.base_vds)

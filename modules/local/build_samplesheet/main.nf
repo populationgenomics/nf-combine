@@ -10,7 +10,7 @@ process BUILD_SAMPLESHEET {
     val refresh
 
     output:
-    tuple path('*.tsv'), path('base_vds.txt'), path('registered_vds.txt')
+    tuple path('*.tsv'), path('base_vds.txt')
 
     script:
     def refresh_ids = refresh ? "--refresh ${refresh.join(' ')}" : ''

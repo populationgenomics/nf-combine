@@ -1,7 +1,6 @@
 /*
  * Combining for one dataset and sequencing type: Metamist cohorts (or a sample sheet) -> gVCFs -> one Hail VDS,
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
- * See docs/DESIGN.md.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
@@ -97,39 +96,15 @@ def readSheet(sheet) {
 }
 
 /*
- * Everything that can fail cheaply fails here, before any cluster starts: refresh IDs, gVCFs and their
- * indexes, the base VDS, and the output (ADR 0004). An existing output is never overwritten: if it's
- * registered there's nothing to do, and otherwise a person has to look at it.
+ * A cheap check on the VDS existence, all other checks are done at SampleSheet construction.
  */
-def planCombine(sheet, output, discovered_base, registered, refresh, force) {
+def planCombine(sheet, output, base_vds, refresh, force) {
     def rows = readSheet(sheet)
     def sg_ids = rows.collect { row -> row.sg_id }.toSorted()
 
-    def unknown = refresh.findAll { sg_id -> !(sg_id in sg_ids) }
-    if (unknown) {
-        fail("--refresh names SGs that aren't being combined: ${unknown.toSorted()}")
-    }
-    def missing = rows
-        .collectMany { row -> [row.gvcf, "${row.gvcf}.tbi"] }
-        .findAll { path -> !file(path).exists() }
-    if (missing) {
-        fail("${missing.size()} gVCF file(s) are missing:\n  ${missing.join('\n  ')}")
-    }
+    // check the SUCCESS marker inside the VDS for existence, not the directory
+    def exists = file("${output}/variant_data/_SUCCESS").exists()
 
-    def base_vds = force ? null : (params.base_vds ?: discovered_base)
-    if (base_vds && !file(base_vds).exists()) {
-        fail("The base VDS ${base_vds} doesn't exist")
-    }
-
-    def exists = file(output).exists()
-    def is_registered = output in registered
-    if (exists && !is_registered) {
-        fail("This workflow would create ${output}, but it already exists and is not registered. " +
-            'A VDS is never overwritten: inspect it, then register or delete it')
-    }
-    if (is_registered && !exists) {
-        fail("${output} is registered in Metamist, but doesn't exist")
-    }
     return [
         name: output.tokenize('/').last().replaceAll(/\.vds$/, ''),
         output: output,
@@ -151,38 +126,43 @@ workflow {
     main:
     validateParams()
     def force = flag(params.force)
+
+    // tolerate a list in config, or a ','-delimited String on CLI
     def refresh = params.refresh ? idList(params.refresh).unique() : []
     def cohorts = params.cohorts ? idList(params.cohorts).unique() : []
+
     // only cohort runs register: a sample-sheet run has nothing to link the VDS to
     def register = flag(params.register) && cohorts
 
-    // [sheet, output VDS, base VDS or null, registered VDS paths]
+    // [sheet, output VDS, base VDS or null]
     def built_sheet = channel.empty()
     def inputs = channel.empty()
     if (params.samplesheet) {
         // a test or one-off run, with its own output path. Metamist isn't consulted, so there's no base VDS
         // unless --base_vds names one, and no VDS counts as registered
         def output = uriOf(file(params.output_vds))
-        inputs = channel.value([file(params.samplesheet, checkIfExists: true), output, null, []])
+        inputs = channel.value([file(params.samplesheet, checkIfExists: true), output, null])
     }
     else {
         // the sheet is named for the VDS it makes (ADR 0004): <hash of SG and refresh IDs>_<SG count>.tsv
         def built = BUILD_SAMPLESHEET(metamistProject(), params.sequencing_type, cohorts, refresh)
-        built_sheet = built.map { sheet, _base, _registered -> sheet }
-        inputs = built.map { sheet, base, registered ->
+        built_sheet = built.map { sheet, _base -> sheet }
+        inputs = built.map { sheet, base ->
             def output = uriOf(workflow.outputDir.resolve("vds/${params.sequencing_type}/${sheet.baseName}.vds"))
-            [sheet, output, base.text.trim() ?: null, registered.readLines()]
+            [sheet, output, base.text.trim() ?: null]
         }
     }
 
     def planned = inputs
-        .map { sheet, output, base, registered ->
-            [sheet, planCombine(sheet, output, base, registered, refresh, force)]
+        .map { sheet, output, base ->
+            [sheet, planCombine(sheet, output, base, refresh, force)]
         }
         .branch { _sheet, plan ->
             done: plan.action == 'done'
             combine: true
         }
+
+    // still gotta remove registered from here
     planned.done.subscribe { _sheet, plan ->
         log.info("${plan.output} already exists and is registered: these ${plan.n_sgs} SGs are already combined")
     }

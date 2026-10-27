@@ -13,7 +13,6 @@ from build_samplesheet import (
     build_rows,
     check_cohorts,
     newest_vds,
-    registered_vdss,
     vds_name,
 )
 from conftest import PROJECT, cohort, gvcf, sg, vds
@@ -72,12 +71,12 @@ def test_no_sgs_of_the_sequencing_type_fails():
 def test_unusable_cohorts_are_reported_together():
     cohorts = [cohort('COH2', [sg('CPG1')], status='inactive'), cohort('COH3', [])]
     with pytest.raises(SamplesheetError) as error:
-        check_cohorts(PROJECT, ['COH1', 'COH2', 'COH3'], cohorts)
+        check_cohorts(['COH1', 'COH2', 'COH3'], cohorts)
     assert "missing: ['COH1'], inactive: ['COH2'], empty: ['COH3']" in str(error.value)
 
 
 def test_analysis_path_falls_back_to_the_outputs_block():
-    assert analysis_path({'output': None, 'outputs': {'basename': 'gs://b/x.vds'}}) == 'gs://b/x.vds'
+    assert analysis_path({'output': None, 'outputs': {'path': 'gs://b/x.vds'}}) == 'gs://b/x.vds'
     assert analysis_path({'output': None, 'outputs': None}) is None
 
 
@@ -86,11 +85,6 @@ def test_base_is_the_newest_vds_of_the_sequencing_type():
     assert newest_vds(analyses, 'genome') == 'gs://b/new.vds'
     assert newest_vds(analyses, 'exome') == 'gs://b/exome.vds'
     assert newest_vds([], 'genome') is None
-
-
-def test_registered_vdss_cover_every_sequencing_type():
-    analyses = [vds(5, 'gs://b/b.vds'), vds(9, 'gs://b/a.vds', 'exome'), vds(9, 'gs://b/a.vds')]
-    assert registered_vdss(analyses) == ['gs://b/a.vds', 'gs://b/b.vds']
 
 
 def test_vds_name_matches_cohort_demo_without_a_refresh():
@@ -108,8 +102,8 @@ def test_refresh_changes_the_vds_name_but_not_the_count():
 
 def test_main_writes_the_sheet_and_vds_lists(tmp_path, monkeypatch):
     response = {
+        'cohorts': [cohort('COH1', [sg('CPG2'), sg('CPG1')])],
         'project': {
-            'cohorts': [cohort('COH1', [sg('CPG2'), sg('CPG1')])],
             'analyses': [vds(3, 'gs://b/one.vds'), vds(4, 'gs://b/two.vds', 'exome')],
         },
     }
@@ -126,12 +120,10 @@ def test_main_writes_the_sheet_and_vds_lists(tmp_path, monkeypatch):
     with (tmp_path / f'{vds_name(["CPG1", "CPG2"], ["CPG2"])}.tsv').open() as handle:
         assert [row['sg_id'] for row in csv.DictReader(handle, delimiter='\t')] == ['CPG1', 'CPG2']
     assert (tmp_path / 'base_vds.txt').read_text() == 'gs://b/one.vds\n'
-    assert (tmp_path / 'registered_vds.txt').read_text() == 'gs://b/one.vds\ngs://b/two.vds\n'
 
 
 def test_main_writes_an_empty_base_when_there_is_none(tmp_path, monkeypatch):
-    response = {'project': {'cohorts': [cohort('COH1', [sg('CPG1')])], 'analyses': []}}
+    response = {'cohorts': [cohort('COH1', [sg('CPG1')])], 'project': {'analyses': []}}
     monkeypatch.setattr(build_samplesheet, 'query', lambda _query, variables: response)  # noqa: ARG005
     build_samplesheet.main(PROJECT, 'genome', ['COH1'], [], str(tmp_path))
     assert (tmp_path / 'base_vds.txt').read_text() == ''
-    assert (tmp_path / 'registered_vds.txt').read_text() == ''

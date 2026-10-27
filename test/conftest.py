@@ -13,7 +13,7 @@ def touch(path: Path) -> str:
 
 def gvcf(sg_id: str, analysis_id: int = 1, path: str | None = None) -> dict:
     """An active gVCF analysis, shaped like the sample sheet query's SG analyses."""
-    return {'id': analysis_id, 'output': path or f'gs://cpg-ds-main/gvcf/{sg_id}.g.vcf.gz', 'outputs': None}
+    return {'id': analysis_id, 'outputs': {'path': path or f'gs://cpg-ds-main/gvcf/{sg_id}.g.vcf.gz'}}
 
 
 def sg(sg_id: str, analyses: list[dict] | None = None, project: str = PROJECT, **fields: object) -> dict:
@@ -32,4 +32,4 @@ def cohort(cohort_id: str, sgs: list[dict], status: str = 'active') -> dict:
 
 def vds(analysis_id: int, path: str, sequencing_type: str = 'genome') -> dict:
     """An active VDS analysis, shaped like the sample sheet query's project analyses."""
-    return {'id': analysis_id, 'output': path, 'outputs': None, 'meta': {'sequencing_type': sequencing_type}}
+    return {'id': analysis_id, 'outputs': {'path': path}, 'meta': {'sequencing_type': sequencing_type}}

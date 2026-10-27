@@ -84,7 +84,7 @@ def cohort_run(tmp_path, sheet, run):
     and the registered VDSs from a fixtures directory, as if Metamist had returned them.
     """
 
-    def _cohort_run(*args: str, base: str = '', registered: tuple = (), refresh: tuple = ()):
+    def _cohort_run(*args: str, base: str = '', refresh: tuple = ()):
         fixtures = tmp_path / 'fixtures'
         shutil.rmtree(fixtures, ignore_errors=True)
         fixtures.mkdir()
@@ -92,7 +92,6 @@ def cohort_run(tmp_path, sheet, run):
         if refresh:
             args = ('--refresh', ','.join(refresh), *args)
         (fixtures / 'base_vds.txt').write_text(f'{base}\n' if base else '')
-        (fixtures / 'registered_vds.txt').write_text(''.join(f'{path}\n' for path in registered))
         config = tmp_path / 'fixtures.config'
         config.write_text(f"process {{\n    withName: 'BUILD_SAMPLESHEET' {{ ext.fixtures = '{fixtures}' }}\n}}\n")
         return run('-c', str(config), *args, inputs=('--cohorts', 'COH1,COH2'))
@@ -174,14 +173,6 @@ def test_bad_sample_sheets_fail_early(run, sheet, content, message):
     assert not tasks
 
 
-def test_existing_unregistered_vds_fails_the_run(run, explicit_vds):
-    explicit_vds.mkdir(parents=True)
-    result, _out, tasks = run()
-    assert result.returncode != 0
-    assert 'already exists and is not registered' in result.stdout + result.stderr
-    assert not tasks
-
-
 def test_cohort_run_builds_on_the_discovered_base_and_registers(cohort_run, tmp_path):
     base = tmp_path / 'base.vds'
     base.mkdir()
@@ -211,22 +202,6 @@ def test_force_ignores_the_discovered_base(cohort_run, tmp_path):
     result, out, _tasks = cohort_run('--force', 'true', base=str(base))
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads((out / RUN_DIR / 'output.json').read_text())['base_vds'] == ''
-
-
-def test_registered_existing_vds_is_a_successful_no_op(cohort_run, tmp_path):
-    out = tmp_path / 'results'
-    vds_path(out).mkdir(parents=True)
-    result, _out, tasks = cohort_run(registered=(str(vds_path(out).resolve()),))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert 'these 3 SGs are already combined' in result.stdout + result.stderr
-    assert not task_names(tasks, 'COMBINE')
-
-
-def test_registered_but_missing_vds_fails(cohort_run, tmp_path):
-    result, _out, tasks = cohort_run(registered=(str(vds_path(tmp_path / 'results').resolve()),))
-    assert result.returncode != 0
-    assert "is registered in Metamist, but doesn't exist" in result.stdout + result.stderr
-    assert not task_names(tasks, 'COMBINE')
 
 
 def test_missing_base_vds_fails(run, tmp_path):

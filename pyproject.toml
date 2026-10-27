@@ -2,7 +2,7 @@
 name = 'nf-combine'
 description = 'Nextflow workflow combining Metamist gVCFs into a Hail VDS on Dataproc'
 readme = 'README.md'
-requires-python = '>=3.11'
+requires-python = '>=3.12'
 version = '0.1.0'
 license = { file = 'LICENSE' }
 # bin/build_samplesheet.py; the Dataproc submitter, Hail script and registration run only inside the cpg container
@@ -12,7 +12,11 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ['pytest', 'ruff']
+dev = [
+    'pre-commit',
+    'pytest',
+    'ruff',
+]
 
 [tool.uv]
 # not an installable package: Nextflow puts bin/ on PATH
