@@ -4,6 +4,11 @@ The output is `<hash>_<count>.vds`. The hash is taken over the sorted SG IDs plu
 and the count is the number of SGs. Refresh IDs are part of the hash because a refresh changes a VDS
 without changing its SG set. Without them, a refresh would get the base VDS's name and become a no-op.
 
+As in `cohort_demo`, the name is made where the SGs are fetched, in `build_samplesheet.py`, and reaches the
+workflow as the sample sheet's filename. That keeps it in Python, where it's unit tested. A run from a supplied
+sample sheet doesn't fetch anything, so it isn't named by content: `--output_vds` gives its path, and the two
+params are required together.
+
 An existing VDS is never overwritten, even with `force`. If the target path already exists, the first
 stage stops before any cluster starts:
 
