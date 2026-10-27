@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Dataproc lifecycle for one combine: create a Hail cluster, run combiner.py on it, and tear it down.
+"""Dataproc lifecycle for one combine: create a Hail cluster, run combiner.py on it, and tear it down.
 
 Run by the COMBINE process (see DESIGN.md, ADR 0003). If the VDS is already complete, as on a retry whose
 first attempt combined but failed to register, no cluster is created. Writes, in the working directory:
@@ -20,11 +19,25 @@ logger = logging.getLogger(__name__)
 
 
 def vds_is_complete(vds: str) -> bool:
-    """Hail marks each of a VDS's two matrix tables with _SUCCESS once it's fully written."""
+    """Checks whether a VDS is fully written.
+
+    Hail marks each of a VDS's two matrix tables with _SUCCESS once it's fully written.
+
+    Args:
+        vds: The VDS path.
+
+    Returns:
+        True if both matrix tables are marked complete.
+    """
     return all(to_path(f'{vds}/{part}/_SUCCESS').exists() for part in ['reference_data', 'variant_data'])
 
 
 def parse_args() -> argparse.Namespace:
+    """Parses the command line, as built by the COMBINE process.
+
+    Returns:
+        The parsed arguments.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cluster-name', required=True, help='Prefix for the cluster name; must start with a letter')
     parser.add_argument('--region', required=True, help='GCP region')
@@ -61,6 +74,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Runs one combine on a Dataproc cluster, unless the VDS is already complete, and writes its records.
+
+    Raises:
+        ValueError: If --intervals isn't a gs:// path.
+        RuntimeError: If the VDS is still incomplete once the combine finishes.
+    """
     args = parse_args()
     if not args.intervals.startswith('gs://'):
         raise ValueError(f'--intervals must be a gs:// path, got {args.intervals}')

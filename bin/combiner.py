@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Hail script, run on the Dataproc cluster by submit_combiner.py: gVCFs, and optionally a base VDS, -> one VDS.
+"""Hail script, run on the Dataproc cluster by submit_combiner.py: gVCFs, and optionally a base VDS, -> one VDS.
 
 With a base VDS (see DESIGN.md):
 - SGs in the base that aren't in the sample sheet are removed
@@ -27,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 
 def get_arguments() -> argparse.Namespace:
+    """Parses the command line, as built by submit_combiner.py.
+
+    Returns:
+        The parsed arguments.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--samplesheet', required=True)
     parser.add_argument('--out', required=True)
@@ -43,13 +47,27 @@ def get_arguments() -> argparse.Namespace:
 
 
 def parse_samplesheet(ss_path: str) -> dict[str, str]:
-    """SG ID -> gVCF path."""
+    """Reads the sample sheet.
+
+    Args:
+        ss_path: Path to the sample sheet TSV, with sg_id and gvcf columns.
+
+    Returns:
+        A mapping of SG ID to gVCF path.
+    """
     with open(ss_path) as handle:
         return {row['sg_id']: row['gvcf'] for row in DictReader(handle, delimiter='\t')}
 
 
 def read_bed_file_as_intervals(bed_path: str) -> list[hl.Interval]:
-    """Interpret a BED file (plain-text or gzipped) as a list of GRCh38 Intervals."""
+    """Reads a BED file as GRCh38 intervals.
+
+    Args:
+        bed_path: Path to a plain-text or gzipped BED file. Blank lines and '#' lines are skipped.
+
+    Returns:
+        One closed interval per BED record, converted from BED's 0-based, half-open coordinates.
+    """
     path = to_path(bed_path)
     intervals: list[hl.Interval] = []
     with gzip.open(path.open('rb'), 'rt') if str(path).endswith('.gz') else path.open() as handle:
@@ -65,8 +83,18 @@ def read_bed_file_as_intervals(bed_path: str) -> list[hl.Interval]:
 
 
 def remove_sgs(vds_path: str, sg_ids: set[str], temp_dir: str) -> str:
-    """
-    Write a copy of the VDS without these SGs, and return its path. Needed for withdrawn and refreshed SGs.
+    """Writes a copy of the VDS without these SGs. Needed for withdrawn and refreshed SGs.
+
+    Args:
+        vds_path: The base VDS.
+        sg_ids: The SGs to remove.
+        temp_dir: Where to write the copy.
+
+    Returns:
+        The path of the copy.
+
+    Raises:
+        NotImplementedError: Always; removal isn't implemented yet.
     """
     raise NotImplementedError(
         f'Removing SGs from a base VDS is not implemented yet. {vds_path} would lose {len(sg_ids)} SG(s): '
@@ -75,6 +103,11 @@ def remove_sgs(vds_path: str, sg_ids: set[str], temp_dir: str) -> str:
 
 
 def main() -> None:
+    """Combines the sample sheet's gVCFs, and any base VDS, into one VDS, then writes the report.
+
+    Raises:
+        RuntimeError: If the output VDS already exists; it can only be a partial write.
+    """
     args = get_arguments()
     hl.init(default_reference='GRCh38')
 
