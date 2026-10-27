@@ -6,7 +6,10 @@ requires-python = '>=3.11'
 version = '0.1.0'
 license = { file = 'LICENSE' }
 # bin/build_samplesheet.py; the Dataproc submitter, Hail script and registration run only inside the cpg container
-dependencies = ['metamist>=7.13.0']
+dependencies = [
+    'cpg-utils>=5.8.1',
+    'metamist>=7.13.0',
+]
 
 [dependency-groups]
 dev = ['pytest', 'ruff']

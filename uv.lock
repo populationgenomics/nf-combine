@@ -1350,6 +1350,7 @@ name = "nf-combine"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cpg-utils" },
     { name = "metamist" },
 ]
 
@@ -1360,7 +1361,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "metamist", specifier = ">=7.13.0" }]
+requires-dist = [
+    { name = "cpg-utils", specifier = ">=5.8.1" },
+    { name = "metamist", specifier = ">=7.13.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [
