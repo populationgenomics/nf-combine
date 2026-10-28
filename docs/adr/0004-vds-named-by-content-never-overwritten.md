@@ -12,7 +12,8 @@ An existing VDS is never overwritten, even with `force`. If the target path alre
 stage stops before any cluster starts:
 
 - If the VDS is registered in Metamist, the run ends as a successful no-op.
-- If it isn't registered, the run fails with "would create X, but X already exists and is not registered".
-  It doesn't register the VDS itself. A registration made after the fact would lack the run's metadata
-  (cohorts, base VDS, refresh list), so the record would be inaccurate. Deleting a VDS is abnormal and is
-  left to a person.
+- If a path to an existing VDS is generated (i.e. by checking `VDS/../_SUCCESS`) markers, the planCombine
+  method routes the process to the branch 'done', meaning the Combiner process is never run, so the registration
+  call inside the process never fires. Registering the VDS is to be done by hand. Deleting an unwanted VDS is 
+  also an irregular behaviour - Hail cannot overwrite a partially written VDS, and the Hail team have confirmed
+  this is a feature not a bug - in the event of partial writes, deletion and registration is by hand.

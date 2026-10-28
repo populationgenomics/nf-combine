@@ -9,7 +9,7 @@ altogether, unlike `nf-align`'s. The only other task is the small `BUILD_SAMPLES
 
 ## Considered Options
 
-- **Hail Query-on-Batch**: no cluster to manage, but not what the existing combiner code has been run on.
+- **Hail Query-on-Batch**: no cluster to manage, but this is explicitly the approach we are moving away from.
 - **Spark in local mode on one large Batch VM**: simple, but only viable for small cohorts.
 
 ## Consequences
@@ -17,3 +17,6 @@ altogether, unlike `nf-align`'s. The only other task is the small `BUILD_SAMPLES
 The Hail version comes from the cluster image `HailDataprocCluster` selects, not from `cpg_container`.
 Registration happens inside the submitter once the job succeeds. The VDS is written directly to its final
 path, so there's no asynchronous Nextflow publish to wait for.
+
+We eventually want to have dataproc templates built up so we have greater control of the hail versions and 
+dataproc artefacts.
