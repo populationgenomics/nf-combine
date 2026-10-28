@@ -26,9 +26,9 @@ import csv
 import hashlib
 import logging
 from argparse import ArgumentParser
-from cloudpathlib.anypath import to_anypath
 from pathlib import Path
 
+from cloudpathlib.anypath import to_anypath
 from cpg_utils.existence_checks import exists
 from metamist.graphql import gql, query
 
@@ -224,9 +224,8 @@ def validate_file_existence(output_rows: list[dict], base_vds: str | None) -> No
 
     errors: list[str] = []
 
-    if isinstance(base_vds, str):
-        if not exists(base_vds):
-            errors.append(f'VDS: {base_vds} does not exist')
+    if isinstance(base_vds, str) and not exists(base_vds):
+        errors.append(f'VDS: {base_vds} does not exist')
 
     for row in output_rows:
         for ext in ['', '.tbi']:
@@ -249,7 +248,7 @@ def check_missing_refresh(input_sgids: set[str], refresh_sgids: list[str]) -> No
         SampleSheetError: If any refresh SG ID is not in the input Cohorts.
     """
 
-    if fresh := (refresh_sgids - input_sgids):
+    if fresh := (set(refresh_sgids) - input_sgids):
         raise SamplesheetError(f'{len(fresh)} SG IDs were due to be refreshed, but were not in input Cohort(s).')
 
 
@@ -258,7 +257,6 @@ def main(
     sequencing_type: str,
     cohort_ids: list[str],
     refresh: list[str],
-    outdir: str,
     base_vds: str | None = None,
 ) -> None:
     """Builds the sample sheet, and writes it with the base and registered VDS lists.
@@ -269,7 +267,7 @@ def main(
         cohort_ids: The cohorts to combine; duplicates are ignored.
         refresh: SG IDs to refresh; they change the VDS name.
         outdir: Where to write the sheet, base_vds.txt and registered_vds.txt.
-        base_vds: Optiona, base VDs to build on. Skips relevant metamist queries.
+        base_vds: Optiona, base VDS to build on. Skips relevant metamist queries.
     """
     cohort_ids = sorted(set(cohort_ids))
     result = query(gql(COHORTS_QUERY), variables={'project': project, 'cohorts': cohort_ids})
@@ -287,10 +285,8 @@ def main(
     # check that all SG IDs due to be refreshed are present in inputs
     check_missing_refresh({row['sg_id'] for row in rows}, refresh)
 
-    out = to_anypath(outdir)
-
-    write_sheet(rows, out / f'{name}.tsv')
-    (out / 'base_vds.txt').write_text(f'{base}\n' if base else '')
+    write_sheet(rows, to_anypath(f'{name}.tsv'))
+    to_anypath('base_vds.txt').write_text(f'{base}\n' if base else '')
     n_datasets = len({row['dataset'] for row in rows})
     logger.info(f'{project} {sequencing_type}: {len(rows)} SGs from {n_datasets} dataset(s) -> {name}, base: {base}')
 
@@ -302,7 +298,6 @@ if __name__ == '__main__':
     parser.add_argument('--sequencing-type', required=True, choices=SEQUENCING_TYPES)
     parser.add_argument('--cohorts', required=True, nargs='+', help='Metamist cohort IDs')
     parser.add_argument('--refresh', nargs='*', default=[], help='SG IDs to refresh; they change the VDS name')
-    parser.add_argument('--outdir', default='.', help='Where to write the sheet and the VDS lists')
     parser.add_argument('--base-vds', default=None, help='A base VDS to build on, skips queries.')
     args = parser.parse_args()
-    main(args.project, args.sequencing_type, args.cohorts, args.refresh, args.outdir, args.base_vds)
+    main(args.project, args.sequencing_type, args.cohorts, args.refresh, args.base_vds)

@@ -98,9 +98,12 @@ def readSheet(sheet) {
 /*
  * A cheap check on the VDS existence, all other checks are done at SampleSheet construction.
  */
-def planCombine(sheet, output, base_vds, refresh, force) {
+def planCombine(sheet, output, discovered_base, refresh, force) {
     def rows = readSheet(sheet)
     def sg_ids = rows.collect { row -> row.sg_id }.toSorted()
+
+    // a supplied --base_vds is the user's to check; force always makes a fresh build
+    def base_vds = force ? null : (params.base_vds ?: discovered_base)
 
     // check the SUCCESS marker inside the VDS for existence, not the directory
     def exists = file("${output}/variant_data/_SUCCESS").exists()

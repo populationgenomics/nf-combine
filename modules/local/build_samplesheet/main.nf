@@ -1,4 +1,4 @@
-// cohorts -> one combining sample sheet, named for the VDS it makes, plus the project's registered VDSs;
+// cohorts -> one combining sample sheet, named for the VDS it makes, plus the base VDS to build on;
 // see bin/build_samplesheet.py
 process BUILD_SAMPLESHEET {
     tag "${project}"
@@ -22,18 +22,18 @@ process BUILD_SAMPLESHEET {
         ${refresh_ids}
     """
 
-    // task.ext.fixtures, set from config in the stub tests, is a directory holding all three outputs
+    // task.ext.fixtures, set from config in the stub tests, is a directory holding both outputs
     stub:
     def fixtures = task.ext.fixtures
     if (fixtures) {
         """
-        cp ${fixtures}/*.tsv ${fixtures}/base_vds.txt ${fixtures}/registered_vds.txt .
+        cp ${fixtures}/*.tsv ${fixtures}/base_vds.txt .
         """
     }
     else {
         """
         printf 'sg_id\\tgvcf\\tdataset\\n' > stub_0.tsv
-        touch base_vds.txt registered_vds.txt
+        touch base_vds.txt
         """
     }
 }

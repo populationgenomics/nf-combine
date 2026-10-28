@@ -137,25 +137,6 @@ def test_cohort_run_writes_the_vds_its_sheet_is_named_for(cohort_run):
     assert (out / RUN_DIR / 'samplesheet.tsv').exists()
 
 
-def test_refresh_of_an_sg_not_being_combined_fails(run):
-    result, _out, tasks = run('--refresh', 'CPG2,CPG9')
-    assert result.returncode != 0
-    assert "--refresh names SGs that aren't being combined: [CPG9]" in result.stdout + result.stderr
-    assert not tasks
-
-
-def test_missing_gvcfs_and_indexes_are_listed_together(run, tmp_path):
-    (tmp_path / 'data' / 'CPG1.g.vcf.gz').unlink()
-    (tmp_path / 'data' / 'CPG3.g.vcf.gz.tbi').unlink()
-    result, _out, tasks = run()
-    console = result.stdout + result.stderr
-    assert result.returncode != 0
-    assert '2 gVCF file(s) are missing' in console
-    assert 'CPG1.g.vcf.gz\n' in console
-    assert 'CPG3.g.vcf.gz.tbi' in console
-    assert not tasks
-
-
 @pytest.mark.parametrize(
     ('content', 'message'),
     [
@@ -202,13 +183,6 @@ def test_force_ignores_the_discovered_base(cohort_run, tmp_path):
     result, out, _tasks = cohort_run('--force', 'true', base=str(base))
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads((out / RUN_DIR / 'output.json').read_text())['base_vds'] == ''
-
-
-def test_missing_base_vds_fails(run, tmp_path):
-    result, _out, tasks = run('--base_vds', str(tmp_path / 'nowhere.vds'))
-    assert result.returncode != 0
-    assert "nowhere.vds doesn't exist" in result.stdout + result.stderr
-    assert not tasks
 
 
 def test_real_commands_as_rendered(run, sheet, tmp_path):

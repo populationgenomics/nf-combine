@@ -13,10 +13,19 @@ from build_samplesheet import (
     build_rows,
     check_cohorts,
     newest_vds,
+    validate_file_existence,
     vds_name,
 )
 from conftest import PROJECT, cohort, gvcf, sg, vds
 from metamist.graphql import gql, validate
+
+
+@pytest.fixture(autouse=True)
+def missing(monkeypatch) -> set[str]:
+    """Paths the patched existence check reports as missing; every other path exists. Storage is never contacted."""
+    absent: set[str] = set()
+    monkeypatch.setattr(build_samplesheet, 'exists', lambda path: path not in absent)
+    return absent
 
 
 def test_query_matches_metamist_schema():
@@ -100,7 +109,7 @@ def test_refresh_changes_the_vds_name_but_not_the_count():
     assert refreshed == vds_name(['CPG2', 'CPG1'], ['CPG2'])
 
 
-def test_main_writes_the_sheet_and_vds_lists(tmp_path, monkeypatch):
+def test_main_writes_the_sheet_and_vds_lists(monkeypatch):
     response = {
         'cohorts': [cohort('COH1', [sg('CPG2'), sg('CPG1')])],
         'project': {
@@ -114,16 +123,38 @@ def test_main_writes_the_sheet_and_vds_lists(tmp_path, monkeypatch):
         return response
 
     monkeypatch.setattr(build_samplesheet, 'query', fake_query)
-    build_samplesheet.main(PROJECT, 'genome', ['COH1', 'COH1'], ['CPG2'], str(tmp_path))
+    build_samplesheet.main(PROJECT, 'genome', ['COH1', 'COH1'], ['CPG2'])
 
     assert queried == {'project': PROJECT, 'cohorts': ['COH1']}
-    with (tmp_path / f'{vds_name(["CPG1", "CPG2"], ["CPG2"])}.tsv').open() as handle:
+    with open(f'{vds_name(["CPG1", "CPG2"], ["CPG2"])}.tsv') as handle:
         assert [row['sg_id'] for row in csv.DictReader(handle, delimiter='\t')] == ['CPG1', 'CPG2']
-    assert (tmp_path / 'base_vds.txt').read_text() == 'gs://b/one.vds\n'
+    with open('base_vds.txt') as handle:
+        assert handle.read() == 'gs://b/one.vds\n'
 
 
-def test_main_writes_an_empty_base_when_there_is_none(tmp_path, monkeypatch):
+def test_main_writes_an_empty_base_when_there_is_none(monkeypatch):
     response = {'cohorts': [cohort('COH1', [sg('CPG1')])], 'project': {'analyses': []}}
     monkeypatch.setattr(build_samplesheet, 'query', lambda _query, variables: response)  # noqa: ARG005
-    build_samplesheet.main(PROJECT, 'genome', ['COH1'], [], str(tmp_path))
-    assert (tmp_path / 'base_vds.txt').read_text() == ''
+    build_samplesheet.main(PROJECT, 'genome', ['COH1'], [])
+    with open('base_vds.txt') as handle:
+        assert handle.read() == ''
+
+
+def test_every_missing_input_is_reported_at_once(missing):
+    rows = build_rows([cohort('COH1', [sg('CPG1'), sg('CPG2'), sg('CPG3')])], 'genome')
+    missing.update(
+        {'gs://b/base.vds', 'gs://cpg-ds-main/gvcf/CPG1.g.vcf.gz', 'gs://cpg-ds-main/gvcf/CPG2.g.vcf.gz.tbi'}
+    )
+    with pytest.raises(FileNotFoundError) as error:
+        validate_file_existence(rows, 'gs://b/base.vds')
+    assert 'VDS: gs://b/base.vds does not exist' in str(error.value)
+    assert 'gVCF: gs://cpg-ds-main/gvcf/CPG1.g.vcf.gz does not exist' in str(error.value)
+    assert 'gVCF: gs://cpg-ds-main/gvcf/CPG2.g.vcf.gz.tbi does not exist' in str(error.value)
+    assert 'CPG3' not in str(error.value)
+
+
+def test_refresh_of_an_sg_not_being_combined_fails(monkeypatch):
+    response = {'cohorts': [cohort('COH1', [sg('CPG1')])], 'project': {'analyses': []}}
+    monkeypatch.setattr(build_samplesheet, 'query', lambda _query, variables: response)  # noqa: ARG005
+    with pytest.raises(SamplesheetError, match='1 SG IDs were due to be refreshed'):
+        build_samplesheet.main(PROJECT, 'genome', ['COH1'], ['CPG1', 'CPG9'])
