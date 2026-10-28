@@ -50,7 +50,7 @@ process COMBINE {
         --target-records ${cluster.target_records} \\
         --gvcf-batch-size ${cluster.gvcf_batch_size} \\
         ${plan.force ? '--force' : ''} \\
-        --labels ar-guid=${cluster.ar_guid} compute-category=dataproc dataset=${cluster.dataset}
+        --labels ar-guid=${cluster.ar_guid} compute-category=dataproc dataset=${cluster.project}
 
     ${register}
     """

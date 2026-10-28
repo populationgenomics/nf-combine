@@ -22,6 +22,7 @@ def vds_is_complete(vds: str) -> bool:
     """Checks whether a VDS is fully written.
 
     Hail marks each of a VDS's two matrix tables with _SUCCESS once it's fully written.
+    This should have been checked in the outer scope.
 
     Args:
         vds: The VDS path.

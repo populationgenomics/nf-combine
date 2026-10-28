@@ -30,8 +30,12 @@ def flag(param) {
     param.toString().toBoolean()
 }
 
-def intervals() {
-    params.sequencing_type == 'exome' ? params.exome_intervals : params.genome_intervals
+def combinerIntervals() {
+    params.sequencing_type == 'exome' ? params.exome_combiner_intervals : params.genome_combiner_intervals
+}
+
+def densifyIntervals() {
+    params.sequencing_type == 'exome' ? params.exome_densify_intervals : params.genome_densify_intervals
 }
 
 def validateParams() {
@@ -67,8 +71,8 @@ def validateParams() {
     if (flag(params.force) && params.base_vds) {
         error('--force makes a fresh build, so it cannot be combined with --base_vds')
     }
-    if (!intervals()) {
-        error("No intervals for ${params.sequencing_type}: set --${params.sequencing_type}_intervals")
+    if (!combinerIntervals()) {
+        error("No combiner intervals set for ${params.sequencing_type}: set --${params.sequencing_type}_combiner_intervals")
     }
 }
 
@@ -165,7 +169,7 @@ workflow {
             combine: true
         }
 
-    // still gotta remove registered from here
+    // subscribe is a non-blocking side-effect operator, so this only prints
     planned.done.subscribe { _sheet, plan ->
         log.info("${plan.output} already exists and is registered: these ${plan.n_sgs} SGs are already combined")
     }
@@ -173,11 +177,10 @@ workflow {
     def bucket = "gs://cpg-${params.dataset}-${params.accessLevel == 'test' ? 'test' : 'main'}"
     def cluster = [
         ar_guid: params.arGuid,
-        dataset: params.dataset,
-        project: params.dataproc_project ?: params.dataset,
+        project: params.dataset,
         region: params.dataproc_region,
         service_account: params.dataproc_service_account,
-        staging_bucket: params.dataproc_staging_bucket,
+        staging_bucket: "${bucket}-tmp",
         temp_bucket: "${bucket}-tmp",
         autoscaling_policy: params.dataproc_autoscaling_policy,
         master_type: params.dataproc_master_type,
@@ -189,11 +192,12 @@ workflow {
         num_local_ssds: params.dataproc_num_local_ssds,
         max_age: params.dataproc_max_age,
         max_idle: params.dataproc_max_idle,
-        intervals: intervals(),
+        intervals: combinerIntervals(),
         branch_factor: params.branch_factor,
         target_records: params.target_records,
         gvcf_batch_size: params.gvcf_batch_size,
     ]
+
     def registration = register
         ? [project: metamistProject(), cohorts: cohorts, sequencing_type: params.sequencing_type, ar_guid: params.arGuid]
         : [:]
@@ -201,9 +205,9 @@ workflow {
     COMBINE(planned.combine, cluster, registration)
 
     publish:
-    samplesheet = built_sheet
-    cluster = COMBINE.out.cluster
-    report = COMBINE.out.report
+      samplesheet = built_sheet
+      cluster = COMBINE.out.cluster
+      report = COMBINE.out.report
 }
 
 // paths are relative to outputDir, which defaults to the dataset bucket (nextflow.config)

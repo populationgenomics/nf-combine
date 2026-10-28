@@ -19,7 +19,7 @@ import os
 from csv import DictReader
 
 import hail as hl
-from cpg_utils import to_path
+from cpg_utils import existence_checks, to_path
 from hail.vds import new_combiner
 
 logger = logging.getLogger(__name__)
