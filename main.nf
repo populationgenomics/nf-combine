@@ -1,5 +1,5 @@
 /*
- * Combining for one dataset and sequencing type: Metamist cohorts (or a sample sheet) -> gVCFs -> one Hail VDS,
+ * Combining for one dataset and sequencing type: Metamist cohorts -> gVCFs -> one Hail VDS,
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
  */
 
@@ -40,7 +40,7 @@ def densifyIntervals() {
 
 def validateParams() {
     def required = [
-        'dataset', 'sequencing_type', 'arGuid', 'cpg_container',
+        'dataset', 'sequencing_type', 'arGuid', 'cohorts', 'cpg_container',
         'dataproc_service_account', 'dataproc_staging_bucket', 'dataproc_autoscaling_policy',
     ]
     def missing = required.findAll { name -> !params[name] }
@@ -52,16 +52,6 @@ def validateParams() {
     }
     if (!(params.accessLevel in ['full', 'standard', 'test'])) {
         error("--accessLevel must be full, standard or test, got '${params.accessLevel}'")
-    }
-    if ([params.cohorts, params.samplesheet].count { input -> input } != 1) {
-        error('Provide exactly one of --cohorts or --samplesheet')
-    }
-    // a supplied sheet is an alternative input, and comes with an alternative output: its own VDS path
-    if (params.samplesheet as boolean != params.output_vds as boolean) {
-        error('--samplesheet and --output_vds go together: a sample-sheet run writes to the VDS path it is given')
-    }
-    if (params.output_vds && !params.output_vds.toString().endsWith('.vds')) {
-        error("--output_vds must end in .vds, got '${params.output_vds}'")
     }
     ['force', 'register', 'preemptible_secondary_workers'].each { name ->
         if (!(params[name].toString() in ['true', 'false'])) {
@@ -76,35 +66,12 @@ def validateParams() {
     }
 }
 
-// a sample sheet as a list of row maps, failing on a missing column, an empty value or a repeated SG
-def readSheet(sheet) {
-    def columns = ['sg_id', 'gvcf', 'dataset']
-    def lines = sheet.readLines().findAll { line -> line.trim() }
-    def header = lines ? lines[0].split('\t').toList() : []
-    if (!header.containsAll(columns)) {
-        fail("${sheet.name} needs the columns ${columns}, found ${header}")
-    }
-    def rows = lines.drop(1).collect { line -> [header, line.split('\t', -1).toList()].transpose().collectEntries() }
-    def incomplete = rows.findAll { row -> columns.any { column -> !row[column] } }
-    if (incomplete) {
-        fail("${incomplete.size()} sample sheet row(s) have empty values, e.g. ${incomplete[0]}")
-    }
-    def repeated = rows.countBy { row -> row.sg_id }.findAll { _id, n -> n > 1 }.keySet()
-    if (repeated) {
-        fail("SGs appear more than once in the sample sheet: ${repeated.toSorted()}")
-    }
-    if (!rows) {
-        fail('The sample sheet has no SGs')
-    }
-    return rows
-}
-
 /*
  * A cheap check on the VDS existence, all other checks are done at SampleSheet construction.
  */
-def planCombine(sheet, output, discovered_base, refresh, force) {
-    def rows = readSheet(sheet)
-    def sg_ids = rows.collect { row -> row.sg_id }.toSorted()
+def planCombine(sheet, discovered_base, refresh, force) {
+    // the sheet is named for the VDS it makes (ADR 0004): <hash of SG and refresh IDs>_<SG count>.tsv
+    def output = uriOf(workflow.outputDir.resolve("vds/${params.sequencing_type}/${sheet.baseName}.vds"))
 
     // a supplied --base_vds is the user's to check; force always makes a fresh build
     def base_vds = force ? null : (params.base_vds ?: discovered_base)
@@ -113,20 +80,14 @@ def planCombine(sheet, output, discovered_base, refresh, force) {
     def exists = file("${output}/variant_data/_SUCCESS").exists()
 
     return [
-        name: output.tokenize('/').last().replaceAll(/\.vds$/, ''),
+        name: sheet.baseName,
         output: output,
         base_vds: base_vds,
         refresh: refresh.toSorted(),
         force: force,
-        n_sgs: sg_ids.size(),
+        n_sgs: sheet.readLines().count { line -> line.trim() } - 1,
         action: exists ? 'done' : 'combine',
     ]
-}
-
-// error() inside a channel operator reaches the console only as "Unexpected error", so log the reason first
-def fail(message) {
-    log.error(message)
-    error(message)
 }
 
 workflow {
@@ -136,33 +97,14 @@ workflow {
 
     // tolerate a list in config, or a ','-delimited String on CLI
     def refresh = params.refresh ? idList(params.refresh).unique() : []
-    def cohorts = params.cohorts ? idList(params.cohorts).unique() : []
+    def cohorts = idList(params.cohorts).unique()
 
-    // only cohort runs register: a sample-sheet run has nothing to link the VDS to
-    def register = flag(params.register) && cohorts
+    // [sheet, base_vds.txt]
+    def built = BUILD_SAMPLESHEET(metamistProject(), params.sequencing_type, cohorts, refresh)
 
-    // [sheet, output VDS, base VDS or null]
-    def built_sheet = channel.empty()
-    def inputs = channel.empty()
-    if (params.samplesheet) {
-        // a test or one-off run, with its own output path. Metamist isn't consulted, so there's no base VDS
-        // unless --base_vds names one, and no VDS counts as registered
-        def output = uriOf(file(params.output_vds))
-        inputs = channel.value([file(params.samplesheet, checkIfExists: true), output, null])
-    }
-    else {
-        // the sheet is named for the VDS it makes (ADR 0004): <hash of SG and refresh IDs>_<SG count>.tsv
-        def built = BUILD_SAMPLESHEET(metamistProject(), params.sequencing_type, cohorts, refresh)
-        built_sheet = built.map { sheet, _base -> sheet }
-        inputs = built.map { sheet, base ->
-            def output = uriOf(workflow.outputDir.resolve("vds/${params.sequencing_type}/${sheet.baseName}.vds"))
-            [sheet, output, base.text.trim() ?: null]
-        }
-    }
-
-    def planned = inputs
-        .map { sheet, output, base ->
-            [sheet, planCombine(sheet, output, base, refresh, force)]
+    def planned = built
+        .map { sheet, base ->
+            [sheet, planCombine(sheet, base.text.trim() ?: null, refresh, force)]
         }
         .branch { _sheet, plan ->
             done: plan.action == 'done'
@@ -198,14 +140,14 @@ workflow {
         gvcf_batch_size: params.gvcf_batch_size,
     ]
 
-    def registration = register
+    def registration = flag(params.register)
         ? [project: metamistProject(), cohorts: cohorts, sequencing_type: params.sequencing_type, ar_guid: params.arGuid]
         : [:]
 
     COMBINE(planned.combine, cluster, registration)
 
     publish:
-      samplesheet = built_sheet
+      samplesheet = built.map { sheet, _base -> sheet }
       cluster = COMBINE.out.cluster
       report = COMBINE.out.report
 }

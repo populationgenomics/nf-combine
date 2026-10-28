@@ -19,16 +19,17 @@ other datasets ([ADR 0001](adr/0001-one-output-dataset-cohorts-may-span-datasets
 | param | meaning |
 |---|---|
 | `dataset` | Metamist project name, without the `-test` suffix. The VDS is written to and registered in this dataset |
-| `sequencing_type` | `genome` or `exome`. Also selects the default `intervals` file |
+| `sequencing_type` | `genome` or `exome`. Also selects which interval files are used |
 | `accessLevel` | `full` / `standard` (equivalent), or `test`. Selects `<dataset>` or `<dataset>-test`, and the `-main` or `-test` bucket |
 | `arGuid` | analysis-runner GUID, used in resource labels, the run-record directory and the registered analysis. Mandatory |
-| `cohorts` **or** `samplesheet` + `output_vds` | exactly one input. A sample sheet is an alternative input with its own output: `output_vds` is required with `samplesheet` and refused without it. There is no `sgids` input |
+| `cohorts` | the cohorts whose SGs are combined. Mandatory, and the only input: there is no `samplesheet` or `sgids` input |
 | `base_vds` | optional. An explicit base VDS, overriding discovery |
 | `force` | default `false`. Makes a fresh build: no base VDS is used and any saved combiner plan is discarded. Can't be combined with `base_vds` |
 | `refresh` | optional list of SG IDs to refresh |
-| `genome_intervals`, `exome_intervals` | the regions BED the combiner partitions on, chosen by `sequencing_type`. `exome_intervals` has no default yet |
+| `genome_combiner_intervals`, `exome_combiner_intervals` | the regions BED the combiner partitions on, chosen by `sequencing_type`. Both default to variant-balanced BEDs under `gs://cpg-common-main/rd_references/` (5000 intervals for genome, 500 for exome). The run refuses to start if the one for its sequencing type is unset |
+| `genome_densify_intervals`, `exome_densify_intervals` | the coarser BEDs (2000 for genome, 100 for exome) for densifying the VDS. Declared with defaults, but not used yet: no stage densifies |
 | `target_records`, `branch_factor`, `gvcf_batch_size` | combiner tuning, with the same defaults for both sequencing types |
-| `register` | default `true`. Only cohort runs register, whatever this says |
+| `register` | default `true`. If `false`, the VDS is written but not registered |
 | `dataproc_*` | cluster shape and lifecycle, as in `cohort_demo`. `dataproc_project` defaults to the dataset |
 | `dataproc_service_account`, `dataproc_staging_bucket`, `dataproc_autoscaling_policy`, `cpg_container` | no defaults. The run refuses to start without them; the `test` profile sets placeholders |
 
@@ -37,7 +38,7 @@ The Dataproc temp bucket is `gs://cpg-<dataset>-<main|test>-tmp`.
 ## Flow
 
 ```
---cohorts ─ BUILD_SAMPLESHEET ─┐            (or --samplesheet)
+--cohorts ─ BUILD_SAMPLESHEET ─┐
                                ▼
               sheet, base VDS, registered VDSs ─ planCombine ─┬─ VDS exists & registered ─▶ no-op, exit 0
                                                               ├─ any check fails ─▶ fail, no cluster
@@ -46,7 +47,7 @@ The Dataproc temp bucket is `gs://cpg-<dataset>-<main|test>-tmp`.
 
 Everything that can fail cheaply fails before any cluster starts.
 
-### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`, cohort runs only)
+### 1. Sample sheet (`BUILD_SAMPLESHEET`, `bin/build_samplesheet.py`)
 
 - One GraphQL query, scoped to `project(name: <dataset>[-test])`. It fetches the cohorts' status, their SGs
   with each SG's active `gvcf` analyses, and the project's active `vds` analyses. Analysis status is ignored.
@@ -65,20 +66,13 @@ Everything that can fail cheaply fails before any cluster starts.
 - Alongside the sheet it writes the discovered base VDS (the newest active `vds` analysis with the same
   `sequencing_type`, whatever its cohorts) and the paths of all registered VDSs.
 
-A `--samplesheet` run skips this step, and writes to the VDS path given by `--output_vds` instead. The sheet
-needs the columns `sg_id`, `gvcf` and `dataset`, and its filename doesn't matter. Metamist isn't consulted at
-all, so there's no discovered base VDS and no VDS counts as registered. Everything from the pre-flight on is
-the same for both inputs.
-
 ### 2. Pre-flight (`planCombine` in `main.nf`)
 
-- Params: exactly one of `cohorts` / `samplesheet`, `output_vds` (ending `.vds`) exactly when
-  `samplesheet` is given, not both `force` and `base_vds`, and intervals for the sequencing type.
-- The sheet: the three columns, no empty values, no repeated SG, at least one row.
+- Params: `cohorts` given, not both `force` and `base_vds`, and combiner intervals for the sequencing type.
 - Each `refresh` ID must be in the sheet.
 - Each gVCF and its `.tbi` must exist. Every missing file is listed in one error.
 - The base VDS: none with `force`, else `base_vds`, else the discovered one. It must exist.
-- The output: `<outputDir>/vds/<sequencing_type>/<sheet name>.vds` for a cohort run, or `output_vds`.
+- The output: `<outputDir>/vds/<sequencing_type>/<sheet name>.vds`.
 - The output must not exist, unless it's registered:
 
   | exists | registered | outcome |
@@ -87,8 +81,6 @@ the same for both inputs.
   | yes | yes | successful no-op, logged, no cluster |
   | yes | no | fail: "would create X, but X already exists and is not registered" |
   | no | yes | fail: registered in Metamist but missing |
-
-  A sample-sheet run never sees a VDS as registered, so it fails on any existing output.
 
 ### 3. Combine (`COMBINE`, `bin/submit_combiner.py`, `bin/combiner.py`)
 
@@ -118,15 +110,15 @@ yet: any run that needs it fails with `NotImplementedError` and a list of the SG
 ### 4. Registration
 
 Registration happens in the `COMBINE` task, once the submitter succeeds. The VDS is written directly to its final
-path, so there's no asynchronous publish to wait for. A cohort run creates a `vds` analysis in
+path, so there's no asynchronous publish to wait for. It creates a `vds` analysis in
 `<dataset>[-test]`, linked to the cohorts. Its `meta` holds `ar-guid`, `sequencing_type`, `base_vds`, and
-`refresh` when that list isn't empty. Sample-sheet runs don't register.
+`refresh` when that list isn't empty.
 
 ### 5. Run records
 
 `combiner_samplesheets/<ar-guid>/` holds:
 
-- `samplesheet.tsv`: cohort runs only, as in `nf-align`; a supplied sheet isn't republished
+- `samplesheet.tsv`: as in `nf-align`
 - `output.json`: the VDS, the base VDS, and the cluster and job (or `null` if no cluster was needed)
 - `combine_report.json`: the Hail script's report
 
@@ -135,9 +127,8 @@ path, so there's no asynchronous publish to wait for. A cohort run creates a `vd
 - `test/test_build_samplesheet.py`: pytest for `bin/build_samplesheet.py`, with the query validated against
   the schema bundled with the metamist client.
 - `test/test_nextflow_stub.py`: `nextflow run -stub -profile test` checks of the wiring and the pre-flight
-  checks. For cohort runs, `BUILD_SAMPLESHEET`'s stub copies its outputs from `task.ext.fixtures`, set from
-  config. One real run swaps fakes in on `PATH` to check the submitter and registration commands as rendered.
-  Cohort runs check that the VDS path follows the sheet's name; `vds_name` itself is unit tested, including
+  checks. `BUILD_SAMPLESHEET`'s stub copies its outputs from `task.ext.fixtures`, set from config. One real run swaps fakes in on `PATH` to check the submitter and registration commands as rendered.
+  The tests check that the VDS path follows the sheet's name; `vds_name` itself is unit tested, including
   against `cohort_demo`'s hash.
 - A local Hail integration test on tiny gVCFs comes later, once the removal and refresh code exists.
 
@@ -146,5 +137,4 @@ path, so there's no asynchronous publish to wait for. A cohort run creates a `vd
 - Fanning outputs out to each SG's dataset.
 - Guarding against two concurrent runs on the same SG set.
 - Cleaning up temp files and saved plans. The bucket's lifecycle rules handle them.
-- Building a VDS from individual `sgids`.
-- Registering sample-sheet runs.
+- Building a VDS from individual `sgids`, or from a prepared sample sheet.

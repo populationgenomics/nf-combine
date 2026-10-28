@@ -13,9 +13,6 @@ nextflow run main.nf \
     --dataproc_service_account <sa> --dataproc_staging_bucket gs://<bucket> --dataproc_autoscaling_policy <policy>
 ```
 
-For a test or one-off run, replace `--cohorts` with a prepared sheet (`sg_id`, `gvcf`, `dataset`) and the VDS
-path to write: `--samplesheet sheet.tsv --output_vds gs://<bucket>/<path>.vds`. Nothing is registered.
-
 Development:
 
 ```bash
