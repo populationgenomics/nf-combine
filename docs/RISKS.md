@@ -26,14 +26,24 @@ verified by experiment yet. They're inferred from the design session and from `c
    the VDS exists without an analysis. Every later run on the same SG set then fails at pre-flight by
    design ([ADR 0004](adr/0004-vds-named-by-content-never-overwritten.md)). A person has to delete the VDS
    or register it, carrying the run's metadata by hand.
-6. **Preemption of the submitter.** The submitter task is pinned to a non-spot VM
-   ([ADR 0003](adr/0003-hail-on-ephemeral-dataproc-via-non-spot-submitter.md)). If that per-process
-   override is lost, a preemption tears the cluster down. The retry resumes from the saved plan, so the
-   cost is time rather than correctness.
+6. **Preemption of the submitter.** Spot is off for the whole pipeline
+   ([ADR 0003](adr/0003-hail-on-ephemeral-dataproc-via-non-spot-submitter.md)). If a launch config turns
+   `google.batch.spot` back on, a preemption tears the cluster down. The retry resumes from the saved plan,
+   so the cost is time rather than correctness.
 7. **Combiner tuning is genome-derived.** The defaults for `target_records`, `branch_factor` and
    `gvcf_batch_size` are shared by exome and genome, and haven't been tuned on exome data.
 
-## Inherited from `cohort_demo`
+## Implementation assumptions (not yet checked against GCS or Hail)
 
-8. `dataproc_autoscaling_policy` is used but was never declared in `cohort_demo`'s config, and its
-   `COMPARE_VDS` uses an undeclared `params.gcp_project`. Don't copy these across unchanged.
+8. **`file(<vds>).exists()` on GCS.** The pre-flight check treats a VDS path as existing if Nextflow says
+   so. A VDS is a prefix with no object of its own, so this depends on Nextflow's GCS filesystem treating a
+   prefix as a directory. If it doesn't, an existing VDS looks absent. A registered one then fails the run
+   as "registered but missing", which is safe but wrong. An unregistered complete one goes on to `COMBINE`,
+   where the submitter skips the cluster and registers it, against ADR 0004. Check this on a real bucket
+   before the first production run.
+9. **`_SUCCESS` markers.** The submitter takes a VDS as complete when both `reference_data/_SUCCESS` and
+    `variant_data/_SUCCESS` exist. That relies on Hail writing `_SUCCESS` at the root of each matrix table.
+10. **gVCF existence checks run in the samplesheet builder.**
+11. **Cross-dataset gVCFs (risk 1).** In the bundled Metamist schema, `GraphQLSequencingGroup.analyses` has
+    an optional `project` filter that defaults to null. That suggests other projects' analyses are returned,
+    but it hasn't been checked against a live query.
