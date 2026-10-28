@@ -104,8 +104,13 @@ The Hail script:
   `<temp bucket>/nf-combine/combine_reports/<name>.json`
 
 Refresh IDs that aren't in the base VDS, and all refresh IDs in a fresh build, produce a warning and are
-treated as ordinary additions. Removing SGs from a VDS (`remove_sgs` in `bin/combiner.py`) is not written
-yet: any run that needs it fails with `NotImplementedError` and a list of the SGs.
+treated as ordinary additions.
+
+Removal comes first, and drops any alleles only the removed SGs carried. If there's nothing to add, the
+result is written straight to the VDS path. Otherwise it's written to
+`<temp bucket>/nf-combine/combiner_removal/<name>.vds` and becomes the combiner's base. Because the base has
+changed, any saved plan is discarded. A retry that finds that VDS complete skips the removal and resumes the
+plan.
 
 ### 4. Registration
 
