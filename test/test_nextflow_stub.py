@@ -223,10 +223,10 @@ def test_cohorts_are_required(run):
 def test_missing_dataproc_settings_fail_early(run, tmp_path):
     # the test profile sets placeholders, and an empty value can't be passed on the command line
     unset = tmp_path / 'unset.config'
-    unset.write_text('params.dataproc_service_account = null\nparams.cpg_container = null\n')
+    unset.write_text('params.cpg_container = null\n')
     result, _out, tasks = run('-c', str(unset))
     assert result.returncode != 0
-    assert 'Missing required params: --cpg_container, --dataproc_service_account' in result.stdout + result.stderr
+    assert 'Missing required params: --cpg_container' in result.stdout + result.stderr
     assert not tasks
 
 
