@@ -14,26 +14,27 @@ the way they are is recorded in [adr/](adr/). [RISKS.md](RISKS.md) lists what ma
 ## Scope of a run
 
 A run writes and registers one VDS in one dataset, for one sequencing type. Its cohorts may contain SGs from
-other datasets ([ADR 0001](adr/0001-one-output-dataset-cohorts-may-span-datasets.md)).
+multiple datasets, so long as the service account running the pipeline has permission to query metamist for all the included cohorts, and read access to the relevant buckets ([ADR 0001](adr/0001-one-output-dataset-cohorts-may-span-datasets.md)).
 
-| param | meaning |
-|---|---|
-| `dataset` | Metamist project name, without the `-test` suffix. The VDS is written to and registered in this dataset |
-| `sequencing_type` | `genome` or `exome`. Also selects which interval files are used |
-| `accessLevel` | `full` / `standard` (equivalent), or `test`. Selects `<dataset>` or `<dataset>-test`, and the `-main` or `-test` bucket |
-| `arGuid` | analysis-runner GUID, used in resource labels, the run-record directory and the registered analysis. Mandatory |
-| `cohorts` | the cohorts whose SGs are combined. Mandatory, and the only input: there is no `samplesheet` or `sgids` input |
-| `base_vds` | optional. An explicit base VDS, overriding discovery |
-| `force` | default `false`. Makes a fresh build: no base VDS is used and any saved combiner plan is discarded. Can't be combined with `base_vds` |
-| `refresh` | optional list of SG IDs to refresh |
+| param                                                   | meaning                                                                                                                                                                                                                                                                     |
+|---------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `dataset`                                               | Metamist project name, without the `-test` suffix. The VDS is written to and registered in this dataset                                                                                                                                                                     |
+| `sequencing_type`                                       | `genome` or `exome`. Also selects which interval files are used                                                                                                                                                                                                             |
+| `accessLevel`                                           | `full` / `standard` (equivalent), or `test`. Selects `<dataset>` or `<dataset>-test`, and the `-main` or `-test` bucket                                                                                                                                                     |
+| `arGuid`                                                | analysis-runner GUID, used in resource labels, the run-record directory and the registered analysis. Mandatory                                                                                                                                                              |
+| `cohorts`                                               | the cohorts whose SGs are combined. Mandatory, and the only input: there is no `samplesheet` or `sgids` input                                                                                                                                                               |
+| `base_vds`                                              | optional. An explicit base VDS, overriding discovery                                                                                                                                                                                                                        |
+| `force`                                                 | default `false`. Makes a fresh build: no base VDS is used and any saved combiner plan is discarded. Can't be combined with `base_vds`                                                                                                                                       |
+| `refresh`                                               | optional list of SG IDs to refresh. Refreshing is the removal of gVCF content, followed by re-adding from the same source path. Typically done when the SG should be included, but a gVCF was truncated/malformed                                                           |
 | `genome_combiner_intervals`, `exome_combiner_intervals` | the regions BED the combiner partitions on, chosen by `sequencing_type`. Both default to variant-balanced BEDs under `gs://cpg-common-main/rd_references/` (5000 intervals for genome, 500 for exome). The run refuses to start if the one for its sequencing type is unset |
-| `genome_densify_intervals`, `exome_densify_intervals` | the coarser BEDs (2000 for genome, 100 for exome) for densifying the VDS. Declared with defaults, but not used yet: no stage densifies |
-| `target_records`, `branch_factor`, `gvcf_batch_size` | combiner tuning, with the same defaults for both sequencing types |
-| `register` | default `true`. If `false`, the VDS is written but not registered |
-| `dataproc_*` | cluster shape and lifecycle, as in `cohort_demo`. `dataproc_project` defaults to the dataset |
-| `dataproc_service_account`, `dataproc_staging_bucket`, `dataproc_autoscaling_policy`, `cpg_container` | no defaults. The run refuses to start without them; the `test` profile sets placeholders |
-
-The Dataproc temp bucket is `gs://cpg-<dataset>-<main|test>-tmp`.
+| `genome_densify_intervals`, `exome_densify_intervals`   | the coarser BEDs (2000 for genome, 100 for exome) for densifying the VDS. Declared with defaults, but not used yet: no stage densifies                                                                                                                                      |
+| `target_records`, `branch_factor`, `gvcf_batch_size`    | combiner tuning, with the same defaults for both sequencing types                                                                                                                                                                                                           |
+| `register`                                              | default `true`. If `false`, the VDS is written but not registered                                                                                                                                                                                                           |
+| `dataproc_*`                                            | cluster shape and lifecycle, as in `cohort_demo`. `dataproc_project` was removed as each cluster can only be started in the service account's own project                                                                                                                   |
+| `dataproc_autoscaling_policy`                           | defaults to `cpg-dataproc-medium`, also available are `-light` and `-heavy`. Same names in every project                                                                                                                                                                    |
+| `cpg_container`                                         | the docker container with required libraries/packages to run the python components & interact with dataproc API                                                                                                                                                             |
+| `dataproc_service_account`                              | in this implementation always has the pattern `seqera-{accessLevel}@{dataset}.iam.gserviceaccount.com`                                                                                                                                                                      |
+| `dataproc_staging_bucket`                               | staging and Temp bucket are the same: `gs://cpg-<dataset>-<main\|test>-tmp`                                                                                                                                                                                                 |
 
 ## Flow
 
@@ -61,26 +62,24 @@ Everything that can fail cheaply fails before any cluster starts.
   will.
 - The sheet is named for the VDS it makes ([ADR 0004](adr/0004-vds-named-by-content-never-overwritten.md)):
   `<hash>_<count>.tsv`. The hash is the first 38 hex characters of the SHA-256 of the sorted SG IDs, joined,
-  then `refresh:` and the sorted refresh IDs if there are any. Without a refresh this is exactly
-  `cohort_demo`'s naming, and as in `cohort_demo` the name reaches `main.nf` through the sheet's filename.
+  then `refresh:` and the sorted refresh IDs if there are any. The hash reaches `main.nf` through the sheet's filename.
 - Alongside the sheet it writes the discovered base VDS (the newest active `vds` analysis with the same
   `sequencing_type`, whatever its cohorts) and the paths of all registered VDSs.
+- This stage executes a directory-cached existence check on all gVCF files and indexes. Could be implemented in Groovy
+  but the functools caching is a massive speed improvement.
 
 ### 2. Pre-flight (`planCombine` in `main.nf`)
 
 - Params: `cohorts` given, not both `force` and `base_vds`, and combiner intervals for the sequencing type.
 - Each `refresh` ID must be in the sheet.
-- Each gVCF and its `.tbi` must exist. Every missing file is listed in one error.
 - The base VDS: none with `force`, else `base_vds`, else the discovered one. It must exist.
 - The output: `<outputDir>/vds/<sequencing_type>/<sheet name>.vds`.
 - The output must not exist, unless it's registered:
 
-  | exists | registered | outcome |
-  |---|---|---|
-  | no | no | combine |
-  | yes | yes | successful no-op, logged, no cluster |
-  | yes | no | fail: "would create X, but X already exists and is not registered" |
-  | no | yes | fail: registered in Metamist but missing |
+  | exists | outcome                              |
+  |--------|--------------------------------------|
+  | no     | combine                              |
+  | yes    | successful no-op, logged, no cluster |
 
 ### 3. Combine (`COMBINE`, `bin/submit_combiner.py`, `bin/combiner.py`)
 
@@ -104,8 +103,13 @@ The Hail script:
   `<temp bucket>/nf-combine/combine_reports/<name>.json`
 
 Refresh IDs that aren't in the base VDS, and all refresh IDs in a fresh build, produce a warning and are
-treated as ordinary additions. Removing SGs from a VDS (`remove_sgs` in `bin/combiner.py`) is not written
-yet: any run that needs it fails with `NotImplementedError` and a list of the SGs.
+treated as ordinary additions.
+
+Removal comes first, and drops any alleles only the removed SGs carried. If there's nothing to add, the
+result is written straight to the VDS path. Otherwise it's written to
+`<temp bucket>/nf-combine/combiner_removal/<name>.vds` and becomes the combiner's base. Because the base has
+changed, any saved plan is discarded. A retry that finds that VDS complete skips the removal and resumes the
+plan.
 
 ### 4. Registration
 

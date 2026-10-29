@@ -19,7 +19,7 @@ import os
 from csv import DictReader
 
 import hail as hl
-from cpg_utils import existence_checks, to_path
+from cpg_utils import to_path
 from hail.vds import new_combiner
 
 logger = logging.getLogger(__name__)
@@ -82,24 +82,33 @@ def read_bed_file_as_intervals(bed_path: str) -> list[hl.Interval]:
     return intervals
 
 
-def remove_sgs(vds_path: str, sg_ids: set[str], temp_dir: str) -> str:
-    """Writes a copy of the VDS without these SGs. Needed for withdrawn and refreshed SGs.
+def vds_is_complete(vds_path: str) -> bool:
+    """Checks whether a VDS is fully written.
+
+    Hail marks each of a VDS's two matrix tables with _SUCCESS once it's fully written.
+
+    Args:
+        vds_path: The VDS path.
+
+    Returns:
+        True if both matrix tables are marked complete.
+    """
+    return all(to_path(f'{vds_path}/{part}/_SUCCESS').exists() for part in ['reference_data', 'variant_data'])
+
+
+def remove_sgs(vds_path: str, sg_ids: set[str]) -> hl.vds.VariantDataset:
+    """Reads the VDS without these SGs. Needed for withdrawn and refreshed SGs.
 
     Args:
         vds_path: The base VDS.
         sg_ids: The SGs to remove.
-        temp_dir: Where to write the copy.
 
     Returns:
-        The path of the copy.
-
-    Raises:
-        NotImplementedError: Always; removal isn't implemented yet.
+        The VDS without these SGs, and without any alleles only they carried.
     """
-    raise NotImplementedError(
-        f'Removing SGs from a base VDS is not implemented yet. {vds_path} would lose {len(sg_ids)} SG(s): '
-        f'{sorted(sg_ids)}. Use --force for a fresh build. Temp dir: {temp_dir}',
-    )
+    logger.info(f'Removing {len(sg_ids)} SG(s) from {vds_path}: {sorted(sg_ids)}')
+    vds = hl.vds.read_vds(vds_path)
+    return hl.vds.filter_samples(vds, sorted(sg_ids), keep=False, remove_dead_alleles=True)
 
 
 def main() -> None:
@@ -132,9 +141,22 @@ def main() -> None:
     removed = (base_sgs - requested) | refreshed
     added = sorted(requested - (base_sgs - removed))
 
-    vds_paths = []
-    if args.base_vds:
-        vds_paths = [remove_sgs(args.base_vds, removed, combiner_temp) if removed else args.base_vds]
+    force = args.force
+    vds_paths = [args.base_vds] if args.base_vds else []
+    if removed:
+        # the base minus the removed SGs, kept so a retry can skip the removal and resume the combiner plan
+        removal_vds = os.path.join(args.temp_dir, 'combiner_removal', f'{name}.vds')
+        if not added:
+            # nothing to combine, so the removal is the whole job
+            remove_sgs(args.base_vds, removed).write(args.out)
+        elif vds_is_complete(removal_vds):
+            logger.info(f'Reusing {removal_vds}, written by an earlier attempt')
+            vds_paths = [removal_vds]
+        else:
+            remove_sgs(args.base_vds, removed).write(removal_vds, overwrite=True)
+            vds_paths = [removal_vds]
+            # the combiner's base has changed, so any saved plan is stale
+            force = True
 
     if added:
         gvcfs = [sg_to_gvcf[sg_id] for sg_id in added]
@@ -149,15 +171,16 @@ def main() -> None:
             reference_genome='GRCh38',
             temp_path=combiner_temp,
             intervals=read_bed_file_as_intervals(args.intervals),
-            force=args.force,
+            force=force,
             branch_factor=args.branch,
             target_records=args.target_records,
             gvcf_batch_size=args.gvcf_batch,
         )
         combiner.run()
-    else:
-        # only removals, or an explicit base holding exactly the requested SGs
-        hl.vds.read_vds(vds_paths[0]).write(args.out)
+    elif not removed:
+        # an explicit base holding exactly the requested SGs
+        # shouldn't be possible, consider making this a failing case (equivalent SGs should give the same path)
+        hl.vds.read_vds(args.base_vds).write(args.out)
 
     report = {
         'vds': args.out,

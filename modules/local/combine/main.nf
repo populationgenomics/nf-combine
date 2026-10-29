@@ -29,7 +29,7 @@ process COMBINE {
         --project ${cluster.project} \\
         --script \$HAIL_SCRIPT \\
         --samplesheet ${samplesheet} \\
-        --staging-bucket ${cluster.staging_bucket} \\
+        --staging-bucket ${cluster.temp_bucket} \\
         --temp-bucket ${cluster.temp_bucket} \\
         --vds ${plan.output} \\
         ${base} \\
