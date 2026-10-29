@@ -10,7 +10,7 @@ verified by experiment yet.
    distant base. This is still correct, because the Hail script removes SGs that weren't requested, but it
    could be slow. Pass `base_vds` explicitly to choose a different one.
 2. **A gVCF re-called at the same SG ID is invisible.** The VDS doesn't record which gVCF each SG came
-   from. The only remedies are `refresh` and `force`. More explicitly in 
+   from. The only remedies are `refresh` and `force`. More explicitly in
 
 ## Runs
 

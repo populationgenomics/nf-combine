@@ -14,6 +14,6 @@ stage stops before any cluster starts:
 - If the VDS is registered in Metamist, the run ends as a successful no-op.
 - If a path to an existing VDS is generated (i.e. by checking `VDS/../_SUCCESS`) markers, the planCombine
   method routes the process to the branch 'done', meaning the Combiner process is never run, so the registration
-  call inside the process never fires. Registering the VDS is to be done by hand. Deleting an unwanted VDS is 
+  call inside the process never fires. Registering the VDS is to be done by hand. Deleting an unwanted VDS is
   also an irregular behaviour - Hail cannot overwrite a partially written VDS, and the Hail team have confirmed
   this is a feature not a bug - in the event of partial writes, deletion and registration is by hand.

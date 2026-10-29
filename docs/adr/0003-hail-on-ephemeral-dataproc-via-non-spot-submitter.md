@@ -18,5 +18,5 @@ The Hail version comes from the cluster image `HailDataprocCluster` selects, not
 Registration happens inside the submitter once the job succeeds. The VDS is written directly to its final
 path, so there's no asynchronous Nextflow publish to wait for.
 
-We eventually want to have dataproc templates built up so we have greater control of the hail versions and 
+We eventually want to have dataproc templates built up so we have greater control of the hail versions and
 dataproc artefacts.

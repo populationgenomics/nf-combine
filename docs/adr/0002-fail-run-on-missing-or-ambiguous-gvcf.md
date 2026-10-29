@@ -7,5 +7,5 @@ that silently leaves out SGs, or picks an arbitrary gVCF, is worse than one that
 the VDS is built in one job, there's also no per-SG output to salvage.
 
 Analysis status is not checked. Any registered gVCF is treated as complete, because `completed` is a
-Metamist status that CPG doesn't use reliably. Active/archived SGs are checked as part of the query, and 
+Metamist status that CPG doesn't use reliably. Active/archived SGs are checked as part of the query, and
 inactive cohorts cause the workflow to fail.
