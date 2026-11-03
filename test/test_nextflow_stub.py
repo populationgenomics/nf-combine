@@ -1,7 +1,7 @@
 """Offline `nextflow run` checks of main.nf's wiring: the pre-flight checks, where the VDS is written, base VDS
-choice, the no-op for an already-combined SG set, registration, densifying and the run records. Placeholder files stand in
-for gVCFs. Most runs are stubs; one real run swaps in fake executables to check the commands as rendered. The
-tests are skipped when nextflow isn't on PATH."""
+choice, the no-op for an already-combined SG set, registration, densifying and the run records. Placeholder files
+stand in for gVCFs. Most runs are stubs; one real run swaps in fake executables to check the commands as rendered.
+The tests are skipped when nextflow isn't on PATH."""
 
 import csv
 import json
@@ -113,6 +113,28 @@ def after(words: list[str], flag: str) -> str:
     return words[words.index(flag) + 1]
 
 
+def install_fakes(tmp_path: Path, fakes: dict[str, str]) -> Path:
+    """
+    Write fake executables that record their arguments to `<name>.args` then run their body, and a config putting
+    them first on each task's PATH.
+
+    Args:
+        tmp_path: The test's temporary directory.
+        fakes: Executable name to the bash run after recording its arguments.
+
+    Returns:
+        The Nextflow config to pass with `-c`.
+    """
+    fake = tmp_path / 'fake'
+    for name, body in fakes.items():
+        touch(fake / name)
+        (fake / name).write_text(f'#!/bin/bash\necho "$@" > {name}.args\n{body}\n')
+        (fake / name).chmod(0o755)
+    config = tmp_path / 'fake.config'
+    config.write_text(f"process.beforeScript = 'export PATH={fake}:$PATH'\n")
+    return config
+
+
 def written_vds(out: Path) -> Path:
     # output_root is under a symlinked tmp dir on macOS
     return Path(json.loads((out / RUN_DIR / 'output.json').read_text())['vds']).resolve()
@@ -186,7 +208,6 @@ def test_real_commands_as_rendered(run, sheet, tmp_path):
     """
     base = tmp_path / 'base.vds'
     base.mkdir()
-    fake = tmp_path / 'fake'
     fakes = {
         'build_samplesheet.py': (
             f'cp {sheet} {vds_name(SGS, ["CPG3"])}.tsv; echo {base} > base_vds.txt; touch registered_vds.txt'
@@ -197,12 +218,7 @@ def test_real_commands_as_rendered(run, sheet, tmp_path):
         ),
         'python3': '',
     }
-    for name, body in fakes.items():
-        touch(fake / name)
-        (fake / name).write_text(f'#!/bin/bash\necho "$@" > {name}.args\n{body}\n')
-        (fake / name).chmod(0o755)
-    config = tmp_path / 'fake.config'
-    config.write_text(f"process.beforeScript = 'export PATH={fake}:$PATH'\n")
+    config = install_fakes(tmp_path, fakes)
 
     result, out, tasks = run('-c', str(config), '--register', 'true', '--refresh', 'CPG3', stub=False)
     assert result.returncode == 0, result.stdout + result.stderr

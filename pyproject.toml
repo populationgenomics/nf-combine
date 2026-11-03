@@ -44,6 +44,8 @@ ignore = ['G004'] # f-strings in log calls
 
 [tool.ruff.lint.per-file-ignores]
 'test/*' = ['S101', 'PLR2004', 'S603', 'S607']
+# Hail code ported from upstream; keep it close to the source rather than refactoring for lint
+'hail_lib/**' = ['C901', 'PLR0912', 'PLR0913', 'PLR0917', 'PLW0108', 'RUF100']
 
 [tool.ruff.lint.flake8-quotes]
 inline-quotes = 'single'
