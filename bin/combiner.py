@@ -12,7 +12,6 @@ temp files are keyed by the VDS name, so a rerun with the same inputs resumes ra
 """
 
 import argparse
-import gzip
 import json
 import logging
 import os
@@ -21,6 +20,7 @@ from csv import DictReader
 import hail as hl
 from cpg_utils import to_path
 from hail.vds import new_combiner
+from nf_combine_hail.intervals import read_bed_file_as_intervals
 
 logger = logging.getLogger(__name__)
 
@@ -57,29 +57,6 @@ def parse_samplesheet(ss_path: str) -> dict[str, str]:
     """
     with open(ss_path) as handle:
         return {row['sg_id']: row['gvcf'] for row in DictReader(handle, delimiter='\t')}
-
-
-def read_bed_file_as_intervals(bed_path: str) -> list[hl.Interval]:
-    """Reads a BED file as GRCh38 intervals.
-
-    Args:
-        bed_path: Path to a plain-text or gzipped BED file. Blank lines and '#' lines are skipped.
-
-    Returns:
-        One closed interval per BED record, converted from BED's 0-based, half-open coordinates.
-    """
-    path = to_path(bed_path)
-    intervals: list[hl.Interval] = []
-    with gzip.open(path.open('rb'), 'rt') if str(path).endswith('.gz') else path.open() as handle:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            chrom, start, end = stripped.split()[:3]
-            start_locus = hl.Locus(chrom, int(start) + 1, reference_genome='GRCh38')
-            end_locus = hl.Locus(chrom, int(end), reference_genome='GRCh38')
-            intervals.append(hl.Interval(start_locus, end_locus, includes_start=True, includes_end=True))
-    return intervals
 
 
 def vds_is_complete(vds_path: str) -> bool:

@@ -1,10 +1,12 @@
 /*
  * Combining for one dataset and sequencing type: Metamist cohorts -> gVCFs -> one Hail VDS,
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
+ * The VDS is then densified, on a second cluster, into sites-only VCF shards.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
 include { COMBINE } from './modules/local/combine'
+include { DENSIFY } from './modules/local/densify'
 
 /*
  * Types only: the defaults are in nextflow.config, which conf/base.config reads before this script is parsed.
@@ -24,7 +26,7 @@ params {
     register: Boolean
     output_root: String?
 
-    // only the run's sequencing type's are needed: validateParams() checks the combiner's
+    // only the run's sequencing type's are needed: validateParams() checks them
     exome_combiner_intervals: String?
     exome_densify_intervals: String?
     genome_combiner_intervals: String?
@@ -62,6 +64,16 @@ def bucket() {
 // the bucket, or output_root for local runs (absolute, whatever the launch dir)
 def datasetRoot() {
     params.output_root ? uriOf(file(params.output_root)) : bucket()
+}
+
+// Dataproc's staging and temp bucket, and the root of the pipeline's own temp files: combiner plans and reports,
+// and densified outputs. The bucket's lifecycle rules clean it up
+def tempBucket() {
+    "${bucket()}-tmp"
+}
+
+def tempRoot() {
+    "${tempBucket()}/nf-combine"
 }
 
 // per-run records: the sample sheet, the cluster and job, and what the combine added and removed
@@ -102,8 +114,15 @@ def validateParams() {
     if (params.force && params.base_vds) {
         error('--force makes a fresh build, so it cannot be combined with --base_vds')
     }
-    if (!combinerIntervals()) {
-        error("No combiner intervals set for ${params.sequencing_type}: set --${params.sequencing_type}_combiner_intervals")
+    [combiner: combinerIntervals(), densify: densifyIntervals()].each { use, intervals ->
+        def param = "--${params.sequencing_type}_${use}_intervals"
+        if (!intervals) {
+            error("No ${use} intervals set for ${params.sequencing_type}: set ${param}")
+        }
+        // read by Hail on the cluster, which can't see local files
+        if (!intervals.startsWith('gs://')) {
+            error("${param} must be a gs:// path, got '${intervals}'")
+        }
     }
 }
 
@@ -128,8 +147,31 @@ def planCombine(sheet, discovered_base, refresh, force) {
         force: force,
         n_sgs: sheet.readLines().count { line -> line.trim() } - 1,
         action: exists ? 'done' : 'combine',
-        // only read by COMBINE's publishDir (conf/base.config)
+        // keyed by the VDS name, so a retry finds the plan and report of its earlier attempt
+        temp_dir: tempRoot(),
+        report: "${tempRoot()}/combine_reports/${sheet.baseName}.json",
+        // only read by publishDir (conf/base.config)
         run_dir: runDir(),
+    ]
+}
+
+/*
+ * Where densifying a VDS writes, all in the temp bucket and named for the VDS, so densifying the same VDS again
+ * reuses what's complete. Nothing downstream reads the MT: it's kept only to resume from.
+ */
+def planDensify(combine_plan) {
+    def name = combine_plan.name
+    def dir = "${tempRoot()}/densify/${name}"
+    return [
+        name: name,
+        vds: combine_plan.output,
+        checkpoint: "${dir}/${name}_checkpoint.mt",
+        mt: "${dir}/${name}.mt",
+        // header per shard: each shard is a valid VCF, for processing shard by shard
+        sites_only: "${dir}/${name}.vcf.bgz",
+        // separate header: the shards concatenate, after the header, into one VCF
+        separate_header: "${dir}/${name}_separate.vcf.bgz",
+        run_dir: combine_plan.run_dir,
     ]
 }
 
@@ -162,7 +204,7 @@ workflow {
         project: params.dataset,
         region: params.dataproc_region,
         service_account: "seqera-${params.accessLevel}@${params.dataset}.iam.gserviceaccount.com",
-        temp_bucket: "${bucket()}-tmp",
+        temp_bucket: tempBucket(),
         autoscaling_policy: params.dataproc_autoscaling_policy,
         master_type: params.dataproc_master_type,
         worker_type: params.dataproc_worker_type,
@@ -173,7 +215,8 @@ workflow {
         num_local_ssds: params.dataproc_num_local_ssds,
         max_age: params.dataproc_max_age,
         max_idle: params.dataproc_max_idle,
-        intervals: combinerIntervals(),
+        combiner_intervals: combinerIntervals(),
+        densify_intervals: densifyIntervals(),
         branch_factor: params.branch_factor,
         target_records: params.target_records,
         gvcf_batch_size: params.gvcf_batch_size,
@@ -183,5 +226,12 @@ workflow {
         ? [project: metamistProject(), cohorts: cohorts, sequencing_type: params.sequencing_type, ar_guid: params.arGuid]
         : [:]
 
-    COMBINE(planned.combine, cluster, registration)
+    // the Hail helpers the cluster's scripts import, shipped with each job
+    def hail_lib = file("${projectDir}/hail_lib/nf_combine_hail")
+
+    COMBINE(planned.combine, hail_lib, cluster, registration)
+
+    // every VDS is densified, whether made by this run or already there
+    def vds_plans = planned.done.map { _sheet, plan -> plan }.mix(COMBINE.out.plan)
+    DENSIFY(vds_plans.map { plan -> planDensify(plan) }, hail_lib, cluster)
 }

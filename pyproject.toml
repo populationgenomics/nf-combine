@@ -7,7 +7,7 @@ version = '0.1.0'
 license = { file = 'LICENSE' }
 # bin/build_samplesheet.py; the Dataproc submitter, Hail script and registration run only inside the cpg container
 dependencies = [
-    'cpg-utils>=5.8.1',
+    'cpg-utils>=5.9.0',
     'metamist>=7.13.0',
 ]
 
@@ -22,9 +22,13 @@ dev = [
 # not an installable package: Nextflow puts bin/ on PATH
 package = false
 
+# until cpg-utils 5.9.0 is released: HailDataprocCluster.upload_pyfiles and python_file_uris
+[tool.uv.sources]
+cpg-utils = { git = 'https://github.com/populationgenomics/cpg-utils.git', branch = 'extend_dataproc_wrapper' }
+
 [tool.pytest.ini_options]
 testpaths = ['test']
-pythonpath = ['bin']
+pythonpath = ['bin', 'hail_lib']
 
 [tool.ruff]
 line-length = 120
