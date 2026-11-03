@@ -54,7 +54,7 @@ params {
  * (conf/base.config) only applies them, so the VDS path and the run records can't drift apart.
  */
 
-// the dataset's bucket
+// the workflow-running dataset's bucket
 def bucket() {
     "gs://cpg-${params.dataset}-${params.accessLevel == 'test' ? 'test' : 'main'}"
 }
