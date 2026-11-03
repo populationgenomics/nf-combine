@@ -41,7 +41,7 @@ def sheet(tmp_path) -> Path:
 @pytest.fixture
 def run(tmp_path, sheet):
     """
-    Run main.nf for --cohorts, by default in stub mode; returns (result, outputDir, trace rows).
+    Run main.nf for --cohorts, by default in stub mode; returns (result, output_root, trace rows).
     BUILD_SAMPLESHEET's stub copies a sheet (named for its VDS), and a base VDS, from a fixtures directory, as
     if Metamist had returned them.
     """
@@ -70,11 +70,11 @@ def run(tmp_path, sheet):
             [
                 'nextflow', 'run', str(MAIN_NF), *(['-stub'] if stub else []), '-profile', 'test',
                 '-with-trace', str(trace),
-                '-output-dir', str(out),
                 '-c', str(config),
                 *inputs,
                 '--dataset', PROJECT,
                 '--sequencing_type', 'genome',
+                '--output_root', str(out),
                 *args,
             ],
             cwd=tmp_path,
@@ -103,7 +103,7 @@ def vds_path(out: Path, refresh: list[str] | None = None) -> Path:
 
 
 def written_vds(out: Path) -> Path:
-    # outputDir is under a symlinked tmp dir on macOS
+    # output_root is under a symlinked tmp dir on macOS
     return Path(json.loads((out / RUN_DIR / 'output.json').read_text())['vds']).resolve()
 
 
@@ -202,7 +202,7 @@ def test_real_commands_as_rendered(run, sheet, tmp_path):
     [
         (('--sequencing_type', 'wgs'), "--sequencing_type must be genome or exome, got 'wgs'"),
         (('--accessLevel', 'prod'), "--accessLevel must be full, standard or test, got 'prod'"),
-        (('--force', 'yes'), "--force must be true or false, got 'yes'"),
+        (('--force', 'yes'), 'Parameter `force` with type Boolean cannot be assigned to yes'),
         (('--force', 'true', '--base_vds', 'gs://b/x.vds'), '--force makes a fresh build'),
     ],
 )
@@ -216,7 +216,7 @@ def test_invalid_params_fail_early(run, args, message):
 def test_cohorts_are_required(run):
     result, _out, tasks = run(inputs=())
     assert result.returncode != 0
-    assert 'Missing required params: --cohorts' in result.stdout + result.stderr
+    assert 'Parameter `cohorts` is required' in result.stdout + result.stderr
     assert not tasks
 
 
@@ -226,7 +226,7 @@ def test_missing_dataproc_settings_fail_early(run, tmp_path):
     unset.write_text('params.cpg_container = null\n')
     result, _out, tasks = run('-c', str(unset))
     assert result.returncode != 0
-    assert 'Missing required params: --cpg_container' in result.stdout + result.stderr
+    assert 'Parameter `cpg_container` is required' in result.stdout + result.stderr
     assert not tasks
 
 

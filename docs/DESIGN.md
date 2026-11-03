@@ -2,7 +2,7 @@
 
 Combines the single-sample gVCFs of a set of Metamist cohorts into one Hail VDS. A run normally builds on
 the newest earlier VDS for the dataset: it removes withdrawn SGs, refreshes changed ones, and adds new ones.
-It's a Nextflow (≥ 25.10, strict syntax) pipeline. Small tasks run on Google Batch, and the combine itself
+It's a Nextflow (≥ 26.04, strict syntax) pipeline. Small tasks run on Google Batch, and the combine itself
 runs on an ephemeral Dataproc cluster. It can be tested offline with stub runs.
 
 The pipeline adapts `cpg-seqera-trial-workflows/workflows/cohort_demo`, which provides the Hail script and
@@ -70,10 +70,11 @@ Everything that can fail cheaply fails before any cluster starts.
 
 ### 2. Pre-flight (`planCombine` in `main.nf`)
 
-- Params: `cohorts` given, not both `force` and `base_vds`, and combiner intervals for the sequencing type.
+- Params: types and required values are checked by the `params` block in `main.nf`; `validateParams` checks
+  allowed values, not both `force` and `base_vds`, and combiner intervals for the sequencing type.
 - Each `refresh` ID must be in the sheet.
 - The base VDS: none with `force`, else `base_vds`, else the discovered one. It must exist.
-- The output: `<outputDir>/vds/<sequencing_type>/<sheet name>.vds`.
+- The output: `<dataset bucket, or output_root>/vds/<sequencing_type>/<sheet name>.vds`.
 - The output must not exist, unless it's registered:
 
   | exists | outcome                              |
