@@ -36,6 +36,7 @@ params {
     branch_factor: Integer
     gvcf_batch_size: Integer
 
+    dataproc_project: String?
     dataproc_region: String
     dataproc_autoscaling_policy: String
     dataproc_master_type: String
@@ -201,7 +202,8 @@ workflow {
 
     def cluster = [
         ar_guid: params.arGuid,
-        project: params.dataset,
+        // a dataset's GCP project ID can differ from its name (seqr is seqr-308602)
+        project: params.dataproc_project ?: params.dataset,
         region: params.dataproc_region,
         service_account: "seqera-${params.accessLevel}@${params.dataset}.iam.gserviceaccount.com",
         temp_bucket: tempBucket(),

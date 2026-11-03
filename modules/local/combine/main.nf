@@ -46,10 +46,7 @@ process COMBINE {
         --intervals ${cluster.combiner_intervals} \\
         --branch ${cluster.branch_factor} \\
         --target_records ${cluster.target_records} \\
-        --gvcf_batch ${cluster.gvcf_batch_size} \\
-        ${base} \\
-        ${refresh} \\
-        ${plan.force ? '--force' : ''}
+        --gvcf_batch ${cluster.gvcf_batch_size} ${base} ${refresh} ${plan.force ? '--force' : ''}
 
     ${register}
     """
