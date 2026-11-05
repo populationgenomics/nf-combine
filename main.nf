@@ -202,11 +202,11 @@ workflow {
 
     def cluster = [
         ar_guid: params.arGuid,
-        // a dataset's GCP project ID can differ from its name (seqr is seqr-308602)
-        project: params.dataproc_project ?: params.dataset,
+        // a dataset's GCP project ID can differ from its name (seqr is seqr-nnnnn)
+        project: params.dataproc_project,
         region: params.dataproc_region,
         service_account: "seqera-${params.accessLevel}@${params.dataproc_project}.iam.gserviceaccount.com",
-        temp_dir: tempBucket(),
+        temp_bucket: tempBucket(),
         autoscaling_policy: params.dataproc_autoscaling_policy,
         master_type: params.dataproc_master_type,
         worker_type: params.dataproc_worker_type,
