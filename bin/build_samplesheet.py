@@ -19,7 +19,7 @@ Alongside the sheet it writes:
 - registered_vds.txt: every active 'vds' analysis path in the project, one per line
 
     build_samplesheet.py --project <dataset>[-test] --sequencing-type genome --cohorts COH0001 COH0002 \\
-        [--refresh CPG0001]
+        [--refresh CPGNNNNN]
 """
 
 import csv

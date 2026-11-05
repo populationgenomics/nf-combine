@@ -40,8 +40,7 @@ def densifyIntervals() {
 
 def validateParams() {
     def required = [
-        'dataset', 'sequencing_type', 'arGuid', 'cohorts', 'cpg_container',
-        'dataproc_service_account', 'dataproc_staging_bucket', 'dataproc_autoscaling_policy',
+        'dataset', 'sequencing_type', 'arGuid', 'accessLevel', 'cohorts', 'cpg_container', 'dataproc_autoscaling_policy',
     ]
     def missing = required.findAll { name -> !params[name] }
     if (missing) {
@@ -121,8 +120,7 @@ workflow {
         ar_guid: params.arGuid,
         project: params.dataset,
         region: params.dataproc_region,
-        service_account: params.dataproc_service_account,
-        staging_bucket: "${bucket}-tmp",
+        service_account: "seqera-${params.accessLevel}@${params.dataset}.iam.gserviceaccount.com",
         temp_bucket: "${bucket}-tmp",
         autoscaling_policy: params.dataproc_autoscaling_policy,
         master_type: params.dataproc_master_type,
