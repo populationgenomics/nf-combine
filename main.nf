@@ -15,6 +15,7 @@ include { DENSIFY } from './modules/local/densify'
  */
 params {
     dataset: String
+    dataproc_project: String
     sequencing_type: String
     accessLevel: String
     arGuid: String
@@ -206,7 +207,7 @@ workflow {
         project: params.dataproc_project ?: params.dataset,
         region: params.dataproc_region,
         service_account: "seqera-${params.accessLevel}@${params.dataproc_project}.iam.gserviceaccount.com",
-        temp_bucket: tempBucket(),
+        temp_dir: tempBucket(),
         autoscaling_policy: params.dataproc_autoscaling_policy,
         master_type: params.dataproc_master_type,
         worker_type: params.dataproc_worker_type,
