@@ -164,7 +164,7 @@ def test_an_existing_vds_is_densified_without_combining(run):
     touch(vds_path(out) / 'variant_data' / '_SUCCESS')
     result, out, tasks = run()
     assert result.returncode == 0, result.stdout + result.stderr
-    assert 'already exists and is registered' in result.stdout
+    assert 'already exists and is registered' in result.stderr
     assert not task_names(tasks, 'COMBINE')
     assert len(task_names(tasks, 'DENSIFY')) == 1
 
