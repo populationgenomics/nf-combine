@@ -3,8 +3,9 @@
 A small Nextflow task creates a Dataproc cluster with `cpg_utils.dataproc_runner`, runs the combiner on it,
 and tears it down. This is the approach already proven in `cohort_demo`, and it scales to cohort-sized
 combines. The submitter lives as long as the combine does, which can be many hours. If it were preempted,
-its SIGTERM handler would tear the cluster down. So it runs on a regular VM, even though the `standard`
-profile uses spot VMs by default. It gets one retry, which resumes from the combiner's saved plan.
+its SIGTERM handler would tear the cluster down. So it runs on a regular VM. Nextflow sets spot only for a
+whole pipeline (`google.batch.spot`), not per process, so this pipeline's `standard` profile turns spot off
+altogether, unlike `nf-align`'s. The only other task is the small `BUILD_SAMPLESHEET`. It gets one retry, which resumes from the combiner's saved plan.
 
 ## Considered Options
 

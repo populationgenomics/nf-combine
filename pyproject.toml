@@ -1,0 +1,45 @@
+[project]
+name = 'nf-combine'
+description = 'Nextflow workflow combining Metamist gVCFs into a Hail VDS on Dataproc'
+readme = 'README.md'
+requires-python = '>=3.12'
+version = '0.1.0'
+license = { file = 'LICENSE' }
+# bin/build_samplesheet.py; the Dataproc submitter, Hail script and registration run only inside the cpg container
+dependencies = [
+    'cpg-utils>=5.8.1',
+    'metamist>=7.13.0',
+]
+
+[dependency-groups]
+dev = [
+    'pre-commit',
+    'pytest',
+    'ruff',
+]
+
+[tool.uv]
+# not an installable package: Nextflow puts bin/ on PATH
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ['test']
+pythonpath = ['bin']
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ['.venv', 'work', 'results']
+
+[tool.ruff.format]
+indent-style = 'space'
+quote-style = 'single'
+
+[tool.ruff.lint]
+select = ['A', 'B', 'C', 'E', 'F', 'G', 'I', 'N', 'Q', 'S', 'W', 'ARG', 'BLE', 'ERA', 'PIE', 'PL', 'RET', 'RUF', 'SIM', 'UP']
+ignore = ['G004'] # f-strings in log calls
+
+[tool.ruff.lint.per-file-ignores]
+'test/*' = ['S101', 'PLR2004', 'S603', 'S607']
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = 'single'
