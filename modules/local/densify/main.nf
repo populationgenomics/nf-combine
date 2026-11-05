@@ -24,6 +24,8 @@ process DENSIFY {
     """
     # a failed lookup inside the argument list would pass silently, so it's looked up on its own line
     HAIL_SCRIPT=\$(which densify.py)
+
+    # the manifest files are fetched here so the next steps can scatter across them
     submit_hail.py \\
         --cluster-name densify-${cluster.ar_guid} \\
         ${clusterArgs(cluster)} \\
