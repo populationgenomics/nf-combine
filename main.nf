@@ -15,7 +15,6 @@ include { DENSIFY } from './modules/local/densify'
  */
 params {
     dataset: String
-    dataproc_project: String
     sequencing_type: String
     accessLevel: String
     arGuid: String
@@ -37,7 +36,7 @@ params {
     branch_factor: Integer
     gvcf_batch_size: Integer
 
-    dataproc_project: String?
+    dataproc_project: String
     dataproc_region: String
     dataproc_autoscaling_policy: String
     dataproc_master_type: String
