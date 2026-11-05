@@ -205,7 +205,7 @@ workflow {
         // a dataset's GCP project ID can differ from its name (seqr is seqr-308602)
         project: params.dataproc_project ?: params.dataset,
         region: params.dataproc_region,
-        service_account: "seqera-${params.accessLevel}@${params.dataset}.iam.gserviceaccount.com",
+        service_account: "seqera-${params.accessLevel}@${params.dataproc_project}.iam.gserviceaccount.com",
         temp_bucket: tempBucket(),
         autoscaling_policy: params.dataproc_autoscaling_policy,
         master_type: params.dataproc_master_type,
