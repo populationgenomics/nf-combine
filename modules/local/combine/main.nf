@@ -1,56 +1,52 @@
 /*
  * One combine on an ephemeral Dataproc cluster, then registration of the VDS (ADR 0003). plan comes from
- * planCombine() in main.nf; cluster holds the Dataproc and combiner settings. registration is empty for runs
- * that don't register, else [project, cohorts, sequencing_type, ar_guid].
+ * planCombine() in main.nf; cluster holds the Dataproc and Hail settings. hail_lib is the nf_combine_hail package,
+ * shipped to the cluster for combiner.py to import. registration is empty for runs that don't register, else
+ * [project, cohorts, sequencing_type, ar_guid].
  */
+include { clusterArgs } from '../dataproc'
+
 process COMBINE {
     tag "${plan.name}"
 
     input:
     tuple path(samplesheet), val(plan)
+    path hail_lib
     val cluster
     val registration
 
     output:
+    val plan, emit: plan
     path 'output.json', emit: cluster
     path 'combine_report.json', emit: report
 
     script:
-    def base = plan.base_vds ? "--base-vds ${plan.base_vds}" : ''
+    def base = plan.base_vds ? "--base_vds ${plan.base_vds}" : ''
     def refresh = plan.refresh ? "--refresh ${plan.refresh.join(' ')}" : ''
     def register = registration ? registerCommand(plan, registration, '') : ''
     """
     # bin/ is on PATH, and the Hail script is uploaded to the cluster from there. A failed lookup inside the
     # argument list would pass silently, so it's looked up on its own line
     HAIL_SCRIPT=\$(which combiner.py)
-    submit_combiner.py \\
+    submit_hail.py \\
         --cluster-name combine-${cluster.ar_guid} \\
-        --region ${cluster.region} \\
-        --project ${cluster.project} \\
+        ${clusterArgs(cluster)} \\
         --script \$HAIL_SCRIPT \\
+        --pyfiles ${hail_lib} \\
+        --files ${samplesheet} \\
+        --complete ${plan.output}/reference_data/_SUCCESS ${plan.output}/variant_data/_SUCCESS \\
+        --fetch ${plan.report} combine_report.json \\
+        --output output.json \\
+        --record vds=${plan.output} base_vds=${plan.base_vds ?: ''} \\
+        -- \\
         --samplesheet ${samplesheet} \\
-        --staging-bucket ${cluster.temp_bucket} \\
-        --temp-bucket ${cluster.temp_bucket} \\
-        --vds ${plan.output} \\
-        ${base} \\
-        ${refresh} \\
-        --intervals ${cluster.intervals} \\
-        --autoscaling-policy ${cluster.autoscaling_policy} \\
-        --master-type ${cluster.master_type} \\
-        --worker-type ${cluster.worker_type} \\
-        --num-workers ${cluster.num_workers} \\
-        --num-secondary-workers ${cluster.num_secondary_workers} \\
-        ${cluster.preemptible_secondary_workers ? '--preemptible-secondary-workers' : ''} \\
-        --max-age ${cluster.max_age} \\
-        --max-idle ${cluster.max_idle} \\
-        --boot-disk-size ${cluster.boot_disk_size_gb} \\
-        --num-local-ssds ${cluster.num_local_ssds} \\
-        --service-account ${cluster.service_account} \\
-        --branch-factor ${cluster.branch_factor} \\
-        --target-records ${cluster.target_records} \\
-        --gvcf-batch-size ${cluster.gvcf_batch_size} \\
-        ${plan.force ? '--force' : ''} \\
-        --labels ar-guid=${cluster.ar_guid} compute-category=dataproc dataset=${cluster.project}
+        --out ${plan.output} \\
+        --temp_dir ${plan.temp_dir} \\
+        --report ${plan.report} \\
+        --intervals ${cluster.combiner_intervals} \\
+        --branch ${cluster.branch_factor} \\
+        --target_records ${cluster.target_records} \\
+        --gvcf_batch ${cluster.gvcf_batch_size} ${base} ${refresh} ${plan.force ? '--force' : ''}
 
     ${register}
     """

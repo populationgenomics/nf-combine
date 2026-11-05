@@ -8,6 +8,7 @@ process BUILD_SAMPLESHEET {
     val sequencing_type
     val cohorts
     val refresh
+    val run_dir // only read by publishDir (conf/base.config)
 
     output:
     tuple path('*.tsv'), path('base_vds.txt')
