@@ -1,12 +1,13 @@
 /*
  * Combining for one dataset and sequencing type: Metamist cohorts -> gVCFs -> one Hail VDS,
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
- * The VDS is then densified, on a second cluster, into sites-only VCF shards.
+ * The VDS is then densified, on a second cluster, into sites-only VCF shards, and those are filtered with VQSR.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
 include { COMBINE } from './modules/local/combine'
 include { DENSIFY } from './modules/local/densify'
+include { VQSR } from './subworkflows/local/vqsr'
 
 /*
  * Types only: the defaults are in nextflow.config, which conf/base.config reads before this script is parsed.
@@ -49,7 +50,21 @@ params {
     dataproc_max_age: Integer
     dataproc_max_idle: Integer
 
+    vqsr: Boolean
+    vqsr_fragments_per_job: Integer
+    snp_filter_level: Float
+    indel_filter_level: Float
+    vqsr_hapmap: String
+    vqsr_omni: String
+    vqsr_one_thousand_genomes: String
+    vqsr_dbsnp: String
+    vqsr_mills: String
+    vqsr_axiom_poly: String
+
     cpg_container: String
+    gcloud_container: String
+    gatk_container: String
+    bcftools_container: String
 }
 
 /*
@@ -176,6 +191,25 @@ def planDensify(combine_plan) {
     ]
 }
 
+/*
+ * Where VQSR on a densified VDS writes, in the temp bucket beside the densified outputs and named for the VDS.
+ * The composed VCF must share a bucket with the separate-header shards it's composed from.
+ */
+def planVqsr(densify_plan) {
+    def name = densify_plan.name
+    def dir = "${tempRoot()}/vqsr/${name}"
+    def vqsr_name = "${name}_vqsr.vcf.gz"
+    return densify_plan + [
+        composed: "${dir}/${name}_sites_only.vcf.bgz",
+        compose_temp: "${dir}/compose_intermediates",
+        vqsr_dir: dir,
+        vqsr_name: vqsr_name,
+        vqsr_vcf: "${dir}/${vqsr_name}",
+        // the index is published with the VCF, so if it exists, an earlier run finished VQSR on this VDS
+        done: file("${dir}/${vqsr_name}.tbi").exists(),
+    ]
+}
+
 workflow {
     validateParams()
 
@@ -237,4 +271,31 @@ workflow {
     // every VDS is densified, whether made by this run or already there
     def vds_plans = planned.done.map { _sheet, plan -> plan }.mix(COMBINE.out.plan)
     DENSIFY(vds_plans.map { plan -> planDensify(plan) }, hail_lib, cluster)
+
+    def vqsr = [
+        fragments_per_job: params.vqsr_fragments_per_job,
+        snp_filter_level: params.snp_filter_level,
+        indel_filter_level: params.indel_filter_level,
+        resources: [
+            hapmap: params.vqsr_hapmap,
+            omni: params.vqsr_omni,
+            one_thousand_genomes: params.vqsr_one_thousand_genomes,
+            dbsnp: params.vqsr_dbsnp,
+            mills: params.vqsr_mills,
+            axiom_poly: params.vqsr_axiom_poly,
+        ],
+    ]
+    def densified = DENSIFY.out.shards
+        .filter { _plan, _sites_only, _separate_header -> params.vqsr }
+        .map { plan, sites_only, separate_header -> [planVqsr(plan), sites_only, separate_header] }
+        .branch { plan, _sites_only, _separate_header ->
+            done: plan.done
+            todo: true
+        }
+
+    densified.done.subscribe { plan, _sites_only, _separate_header ->
+        log.info("${plan.vqsr_vcf} already exists: VQSR on this VDS is already done")
+    }
+
+    VQSR(densified.todo, vqsr)
 }
