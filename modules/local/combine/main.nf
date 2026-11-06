@@ -1,5 +1,5 @@
 /*
- * One combine on an ephemeral Dataproc cluster, then registration of the VDS (ADR 0003). plan comes from
+ * One combine on an ephemeral Dataproc cluster, then registration of the VDS. plan comes from
  * planCombine() in main.nf; cluster holds the Dataproc and Hail settings. hail_lib is the nf_combine_hail package,
  * shipped to the cluster for combiner.py to import. registration is empty for runs that don't register, else
  * [project, cohorts, sequencing_type, ar_guid].
