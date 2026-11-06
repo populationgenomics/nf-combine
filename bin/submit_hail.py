@@ -2,7 +2,7 @@
 
 """Dataproc lifecycle for one Hail job: create a Hail cluster, run a Hail script on it, and tear it down.
 
-Run by the COMBINE and DENSIFY processes (see DESIGN.md, ADR 0003). The submitter's own options come first, then
+Run by the COMBINE and DENSIFY processes (see DESIGN.md). The submitter's own options come first, then
 `--`, then the Hail script's arguments, which are passed on unchanged:
 
     submit_hail.py --cluster-name ... --script combiner.py --pyfiles nf_combine_hail \\

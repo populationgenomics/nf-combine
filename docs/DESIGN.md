@@ -5,16 +5,16 @@ the newest earlier VDS for the dataset: it removes withdrawn SGs, refreshes chan
 It's a Nextflow (≥ 26.04, strict syntax) pipeline. Small tasks run on Google Batch, and the combine itself
 runs on an ephemeral Dataproc cluster. It can be tested offline with stub runs.
 
-The pipeline adapts `cpg-seqera-trial-workflows/workflows/cohort_demo`, which provides the Hail script and
-the Dataproc submitter. Everything around them follows the conventions of `nf-align`.
+The pipeline is an adaptation of `cpg-seqera-trial-workflows/workflows/cohort_demo`, which provides the 
+Hail script and the Dataproc submitter. Everything around them follows the conventions of `nf-align`.
 
-Terms are defined in [GLOSSARY.md](../GLOSSARY.md), which is shared across CPG workflows. Why things are
-the way they are is recorded in [adr/](adr/). [RISKS.md](RISKS.md) lists what may bite later.
+Terms are defined in [GLOSSARY.md](../GLOSSARY.md), [RISKS.md](RISKS.md) lists what may bite later.
 
 ## Scope of a run
 
 A run writes and registers one VDS in one dataset, for one sequencing type. Its cohorts may contain SGs from
-multiple datasets, so long as the service account running the pipeline has permission to query metamist for all the included cohorts, and read access to the relevant buckets ([ADR 0001](adr/0001-one-output-dataset-cohorts-may-span-datasets.md)).
+multiple datasets, so long as the service account running the pipeline has permission to query metamist for 
+all the included cohorts, and read access to the relevant buckets.
 
 | param                                                   | meaning                                                                                                                                                                                                                                                                     |
 |---------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -57,10 +57,10 @@ Everything that can fail cheaply fails before any cluster starts.
   skipped with a warning.
 - Each SG must have exactly one distinct active gVCF path. Several analyses of the same path count as one.
   An SG with none, or with several different paths, fails the run, and every offender is listed in one
-  error ([ADR 0002](adr/0002-fail-run-on-missing-or-ambiguous-gvcf.md)).
+  error.
 - Each row records the SG's own dataset (its project, without `-test`). Nothing uses it yet; later stages
   will.
-- The sheet is named for the VDS it makes ([ADR 0004](adr/0004-vds-named-by-content-never-overwritten.md)):
+- The sheet is named for the VDS it makes:
   `<hash>_<count>.tsv`. The hash is the first 38 hex characters of the SHA-256 of the sorted SG IDs, joined,
   then `refresh:` and the sorted refresh IDs if there are any. The hash reaches `main.nf` through the sheet's filename.
 - Alongside the sheet it writes the discovered base VDS (the newest active `vds` analysis with the same
@@ -86,8 +86,7 @@ Everything that can fail cheaply fails before any cluster starts.
 
 A submitter task creates the Dataproc cluster (named `combine-<ar-guid>-<random>`) and runs the Hail script
 on it. When the job finishes, or the task receives SIGTERM, it tears the cluster down. The pipeline doesn't
-use spot VMs at all, because Nextflow can't exempt a single process from spot
-([ADR 0003](adr/0003-hail-on-ephemeral-dataproc-via-non-spot-submitter.md)). The task gets one retry, which
+use spot VMs at all, because Nextflow can't exempt a single process from spot. The task gets one retry, which
 resumes from the combiner plan saved at `<temp bucket>/nf-combine/combiner_plan/<name>.json`, where `<name>`
 is the VDS filename without `.vds`.
 

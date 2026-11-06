@@ -4,13 +4,13 @@
 
 Run by the BUILD_SAMPLESHEET process at the start of main.nf, for runs built from a list of cohorts:
 - cohorts are looked up in Metamist; missing, inactive and empty cohorts fail the run
-- Cohort may contain SGs from multiple datasets (ADR 0001); each row records the SG's own dataset for later splitting
+- Cohort may contain SGs from multiple datasets; each row records the SG's own dataset for later splitting
 - an SG in several cohorts is kept once, and the overlap is logged
 - SGs that aren't of the requested sequencing type are skipped with a warning
 - each SG needs exactly one distinct active gVCF; several analyses of one file count as one. An SG with none,
-  or with several different files, fails the run, and every offender is reported at once (ADR 0002)
+  or with several different files, fails the run, and every offender is reported at once
 
-The sheet is named for the VDS it makes (ADR 0004): <name>.tsv, where the name is the first 38 hex characters
+The sheet is named for the VDS it makes: <name>.tsv, where the name is the first 38 hex characters
 of the SHA-256 of the sorted SG IDs, joined, then 'refresh:' and the sorted refresh IDs if there are any, then
 _<SG count>.
 
@@ -267,7 +267,7 @@ def main(
         cohort_ids: The cohorts to combine; duplicates are ignored.
         refresh: SG IDs to refresh; they change the VDS name.
         outdir: Where to write the sheet, base_vds.txt and registered_vds.txt.
-        base_vds: Optiona, base VDS to build on. Skips relevant metamist queries.
+        base_vds: Optional, base VDS to build on. Skips relevant metamist queries.
     """
     cohort_ids = sorted(set(cohort_ids))
     result = query(gql(COHORTS_QUERY), variables={'project': project, 'cohorts': cohort_ids})

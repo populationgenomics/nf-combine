@@ -131,7 +131,7 @@ def validateParams() {
  * A cheap check on the VDS existence, all other checks are done at SampleSheet construction.
  */
 def planCombine(sheet, discovered_base, refresh, force) {
-    // the sheet is named for the VDS it makes (ADR 0004): <hash of SG and refresh IDs>_<SG count>.tsv
+    // the sheet is named for the VDS it makes: <hash of SG and refresh IDs>_<SG count>.tsv
     def output = "${datasetRoot()}/vds/${params.sequencing_type}/${sheet.baseName}.vds"
 
     // a supplied --base_vds is the user's to check; force always makes a fresh build
