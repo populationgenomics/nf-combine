@@ -268,7 +268,7 @@ def test_real_commands_as_rendered(run, sheet, tmp_path):
         f'{densify_dir(["CPG3"])}/{name}_full.vcf.bgz/shard-manifest.txt',
     ]
     assert str(Path(after(hail, '--vds')).resolve()) == vds
-    assert after(hail, '--intervals').startswith('gs://cpg-common-main/rd_references/genome_combiner_intervals/2000_')
+    assert after(hail, '--intervals').startswith('gs://cpg-common-main/rd_references/genome_combiner_intervals/500_')
     assert after(hail, '--checkpoint') == f'{densify_dir(["CPG3"])}/{name}_checkpoint.mt'
     assert after(hail, '--out') == f'{densify_dir(["CPG3"])}/{name}.mt'
     assert after(hail, '--sites_only') == f'{densify_dir(["CPG3"])}/{name}.vcf.bgz'
