@@ -239,7 +239,7 @@ process CONCAT_VCFS {
     """
 }
 
-// published to plan.vqsr_dir (conf/base.config), for the annotation stages to read
+// published to plan.vqsr_dir (conf/base.config)
 process APPLY_VQSR_INDEL {
     tag "${plan.name}"
     container params.gatk_container
