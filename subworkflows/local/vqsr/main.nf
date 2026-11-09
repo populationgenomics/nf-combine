@@ -1,7 +1,8 @@
 /*
  * Densified sites-only exports -> one VQSR-filtered sites-only VCF per VDS, in the temp bucket.
  *
- * densified: [plan from planVqsr() in main.nf, header-per-shard manifest, separate-header manifest]
+ * densified: [plan from planVqsr() in main.nf, header-per-shard manifest, separate-header manifest,
+ *            genotypes-inclusive header-per-shard manifest]. The last isn't used here, only passed through to the emit
  * vqsr: settings from main.nf. fragments_per_job, the filter levels, and resources: {name: VCF path}
  *
  * The models are trained on the whole callset, joined by COMPOSE_SITES_ONLY. The SNP tranches are trained and
@@ -38,14 +39,14 @@ workflow VQSR {
     def snp_refs = stagedResources(vqsr, ['hapmap', 'omni', 'one_thousand_genomes', 'dbsnp'])
     def indel_refs = stagedResources(vqsr, ['mills', 'axiom_poly', 'dbsnp'])
 
-    COMPOSE_SITES_ONLY(densified.map { plan, _sites_only, separate_header -> [plan, separate_header] })
+    COMPOSE_SITES_ONLY(densified.map { plan, _sites_only, separate_header, _whole_fragments -> [plan, separate_header] })
     def composed = COMPOSE_SITES_ONLY.out.map { plan -> [plan, file(plan.composed)] }
 
     TRAIN_VQSR_INDEL_MODEL(composed, indel_refs, vqsr)
     TRAIN_VQSR_SNP_MODEL(composed, snp_refs, vqsr)
 
     // [VDS name, chunk index, shard VCFs, their indexes], the shards in manifest (genomic) order
-    def chunks = densified.flatMap { plan, sites_only, _separate_header ->
+    def chunks = densified.flatMap { plan, sites_only, _separate_header, _whole_fragments ->
         def names = sites_only.readLines().collect { line -> line.trim() }.findAll { line -> line }
         def batches = names.collate(vqsr.fragments_per_job)
         (0..<batches.size()).collect { index ->
@@ -84,7 +85,14 @@ workflow VQSR {
         .map { _key, plan, recal, recal_idx, tranches, vcf, tbi -> [plan, vcf, tbi, recal, recal_idx, tranches] }
     APPLY_VQSR_INDEL(to_indel, vqsr)
 
+    // the genotypes-inclusive manifest rejoins its VDS's result; its directory is plan.whole_fragments
+    def whole_manifests = densified.map { plan, _sites_only, _separate_header, whole_fragments -> [plan.name, whole_fragments] }
+    def result = APPLY_VQSR_INDEL.out
+        .map { plan, vcf, tbi -> [plan.name, plan, vcf, tbi] }
+        .join(whole_manifests)
+        .map { _key, plan, vcf, tbi, whole_fragments -> [plan, vcf, tbi, whole_fragments] }
+
     emit:
-    // [plan, VQSR VCF, its index]
-    vcf = APPLY_VQSR_INDEL.out
+    // [plan, VQSR sites-only VCF, its index, genotypes-inclusive header-per-shard manifest]
+    vcf = result
 }

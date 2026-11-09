@@ -60,6 +60,7 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument('--out', required=True, help='The dense MT to write')
     parser.add_argument('--sites_only', required=True, help='Directory of header-per-shard sites-only VCFs')
     parser.add_argument('--separate_header', required=True, help='Directory of separate-header sites-only VCFs')
+    parser.add_argument('--whole_fragments', required=True, help='Directory of header-per-shard full VCFs')
     return parser.parse_args()
 
 
@@ -154,14 +155,14 @@ def select_split_allele(mt: hl.MatrixTable) -> hl.MatrixTable:
     return mt.annotate_rows(info=info.annotate(**selected))
 
 
-def export_sites_only(sites: hl.Table, out_dir: str, parallel: str) -> None:
-    """Exports a sites-only VCF as a directory of shards, unless an earlier attempt finished it.
+def export_vcf_shards(sites: hl.Table | hl.MatrixTable, out_dir: str, parallel: str) -> None:
+    """Exports a VCF as a directory of shards, unless an earlier attempt finished it.
 
     The shard manifest is written last, so a directory without one is a partial export, which is removed
     before exporting again.
 
     Args:
-        sites: The MT's rows.
+        sites: The HT/MT's rows.
         out_dir: The directory to write.
         parallel: Hail's export_vcf parallel mode, 'header_per_shard' or 'separate_header'.
     """
@@ -192,9 +193,14 @@ def main() -> None:
         logger.info(f'Writing the dense MT to {args.out}')
         annotate_and_split(mt).write(args.out, overwrite=True)
 
-    sites = hl.read_matrix_table(args.out).rows()
-    export_sites_only(sites, args.sites_only, parallel='header_per_shard')
-    export_sites_only(sites, args.separate_header, parallel='separate_header')
+    # read the whole MT in, and generate
+    whole_vcf = hl.read_matrix_table(args.out)
+    export_vcf_shards(whole_vcf, args.whole_fragments, parallel='header_per_shard')
+
+    # then write sites-only representations for VQSR training and application
+    sites = whole_vcf.rows()
+    export_vcf_shards(sites, args.sites_only, parallel='header_per_shard')
+    export_vcf_shards(sites, args.separate_header, parallel='separate_header')
 
 
 if __name__ == '__main__':

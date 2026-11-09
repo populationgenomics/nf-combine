@@ -187,6 +187,8 @@ def planDensify(combine_plan) {
         sites_only: "${dir}/${name}.vcf.bgz",
         // separate header: the shards concatenate, after the header, into one VCF
         separate_header: "${dir}/${name}_separate.vcf.bgz",
+        // fragments of a genotypes-inclusive VCF representation
+        whole_fragments: "${dir}/${name}_full.vcf.bgz",
         run_dir: combine_plan.run_dir,
     ]
 }
@@ -286,14 +288,14 @@ workflow {
         ],
     ]
     def densified = DENSIFY.out.shards
-        .filter { _plan, _sites_only, _separate_header -> params.vqsr }
-        .map { plan, sites_only, separate_header -> [planVqsr(plan), sites_only, separate_header] }
-        .branch { plan, _sites_only, _separate_header ->
+        .filter { _plan, _sites_only, _separate_header, _whole_fragments -> params.vqsr }
+        .map { plan, sites_only, separate_header, whole_fragments -> [planVqsr(plan), sites_only, separate_header, whole_fragments] }
+        .branch { plan, _sites_only, _separate_header, _whole_fragments ->
             done: plan.done
             todo: true
         }
 
-    densified.done.subscribe { plan, _sites_only, _separate_header ->
+    densified.done.subscribe { plan, _sites_only, _separate_header, _whole_fragments ->
         log.info("${plan.vqsr_vcf} already exists: VQSR on this VDS is already done")
     }
 
