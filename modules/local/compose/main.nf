@@ -20,6 +20,9 @@ process COMPOSE_SITES_ONLY {
 
     script:
     """
+    # something in the Batch runtime sets CLOUDSDK_PYTHON=/usr/bin/python3, absent in this image; let gcloud find its own
+    unset CLOUDSDK_PYTHON
+
     if gcloud storage objects describe ${plan.composed} > /dev/null 2>&1; then
         echo "${plan.composed} exists, reusing it"
         exit 0
