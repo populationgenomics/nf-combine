@@ -54,6 +54,7 @@ params {
 
     vqsr: Boolean
     vqsr_fragments_per_job: Integer
+    annotate_fragments_per_job: Integer
     snp_filter_level: Float
     indel_filter_level: Float
     vqsr_hapmap: String
@@ -306,6 +307,7 @@ workflow {
 
     def vqsr = [
         fragments_per_job: params.vqsr_fragments_per_job,
+        annotate_fragments_per_job: params.annotate_fragments_per_job,
         snp_filter_level: params.snp_filter_level,
         indel_filter_level: params.indel_filter_level,
         resources: [

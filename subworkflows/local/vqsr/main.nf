@@ -4,12 +4,13 @@
  *
  * densified: [plan from planVqsr() in main.nf, header-per-shard manifest, separate-header manifest,
  *            whole fragments' (header-per-shard) manifest]
- * vqsr: settings from main.nf. fragments_per_job, the filter levels, and resources: {name: VCF path}
+ * vqsr: settings from main.nf. fragments_per_job, annotate_fragments_per_job, the filter levels, and resources:
+ *       {name: VCF path}
  *
  * The models are trained on the whole callset, joined by COMPOSE_SITES_ONLY. The SNP tranches are trained, and both
- * modes applied, on chunks of header-per-shard shards. The whole fragments are chunked the same way, and annotated
- * from the matching shards. Everything is keyed by the VDS name, as a run can't tell how many VDSs it will densify
- * until it's planned them.
+ * modes applied, on chunks of fragments_per_job header-per-shard shards. The whole fragments are chunked separately,
+ * by annotate_fragments_per_job, and annotated from the matching shards' VQSR VCFs, regrouped to match. Everything
+ * is keyed by the VDS name, as a run can't tell how many VDSs it will densify until it's planned them.
  */
 
 include { COMPOSE_SITES_ONLY } from '../../../modules/local/compose'
@@ -73,17 +74,21 @@ workflow VQSR {
         chunked(plan.name, plan.sites_only, manifestNames(sites_only), vqsr.fragments_per_job)
     }
 
-    // the whole fragments, chunked like the sites-only shards. Both are exported from the dense MT's partitions, and
-    // listed in partition order, so the nth whole fragment holds the same records as the nth sites-only shard. Their
-    // names aren't expected to match: they're paired by position alone, so only their counts are checked
+    // the whole fragments, in chunks of their own size. Whole fragments and sites-only shards are both exported from
+    // the dense MT's partitions, and listed in partition order, so the nth whole fragment holds the same records as the
+    // nth sites-only shard. Their names aren't expected to match: they're paired by position alone, so only their
+    // counts are checked
     def whole_chunks = densified.flatMap { plan, sites_only, _separate_header, whole ->
         def names = manifestNames(whole)
         def shard_count = manifestNames(sites_only).size()
         if (names.size() != shard_count) {
             error("${plan.name}: ${names.size()} whole fragments but ${shard_count} sites-only shards, so they can't be paired")
         }
-        chunked(plan.name, plan.whole_fragments, names, vqsr.fragments_per_job)
+        chunked(plan.name, plan.whole_fragments, names, vqsr.annotate_fragments_per_job)
     }
+
+    // [VDS name, its number of sites-only shards], to size the regrouped VQSR VCFs' chunks
+    def shard_counts = densified.map { plan, sites_only, _separate_header, _whole -> [plan.name, manifestNames(sites_only).size()] }
 
     TRAIN_VQSR_SNP_TRANCHES(chunks.combine(TRAIN_VQSR_SNP_MODEL.out, by: 0), snp_refs, vqsr)
 
@@ -112,11 +117,11 @@ workflow VQSR {
         }
     CONCAT_VCFS(vqsr_chunks)
 
-    // each chunk's VQSR VCFs, put back in its sites-only shards' order: APPLY_VQSR names each after its input shard,
-    // but a glob output's order is its own
+    // each VQSR VCF alone, by its sites-only shard's position in the export: [VDS name, position, VCF, index].
+    // APPLY_VQSR names each after its input shard, but a glob output's order is its own, so they're matched by name
     def vqsr_shards = chunks
         .join(APPLY_VQSR.out.shards, by: [0, 1])
-        .map { key, index, shards, _tbis, vcfs, tbis ->
+        .flatMap { key, index, shards, _tbis, vcfs, tbis ->
             def vcf_by_name = asList(vcfs).collectEntries { vcf -> [vcf.name, vcf] }
             def tbi_by_name = asList(tbis).collectEntries { tbi -> [tbi.name, tbi] }
             def names = shards.collect { shard -> "${shard.name.replaceFirst(/\.bgz$/, '')}.vqsr.vcf.gz".toString() }
@@ -124,11 +129,30 @@ workflow VQSR {
             if (missing) {
                 error("${key} chunk ${index}: APPLY_VQSR wrote no ${missing}")
             }
-            [key, index, names.collect { name -> vcf_by_name[name] }, names.collect { name -> tbi_by_name["${name}.tbi".toString()] }]
+            (0..<names.size()).collect { offset ->
+                def name = names[offset]
+                [key, index * vqsr.fragments_per_job + offset, vcf_by_name[name], tbi_by_name["${name}.tbi".toString()]]
+            }
+        }
+
+    // the VQSR VCFs regrouped into the whole fragments' chunks, in position order: [VDS name, chunk index, VCFs,
+    // indexes]. Each group's size is known, so it's emitted once its last VCF is, not once every APPLY_VQSR task is
+    def annotate_size = vqsr.annotate_fragments_per_job
+    def vqsr_annotate_chunks = vqsr_shards
+        .combine(shard_counts, by: 0)
+        .map { key, position, vcf, tbi, total ->
+            def chunk = position.intdiv(annotate_size)
+            [groupKey([key, chunk], Math.min(annotate_size, total - chunk * annotate_size)), position, vcf, tbi]
+        }
+        .groupTuple()
+        .map { group, positions, vcfs, tbis ->
+            def target = group.getGroupTarget()
+            def order = (0..<positions.size()).toSorted { i -> positions[i] }
+            [target[0], target[1], order.collect { i -> vcfs[i] }, order.collect { i -> tbis[i] }]
         }
 
     // each chunk of whole fragments meets the VQSR VCFs of the same partitions, both in partition order
-    ANNOTATE_FRAGMENTS(whole_chunks.join(vqsr_shards, by: [0, 1]))
+    ANNOTATE_FRAGMENTS(whole_chunks.join(vqsr_annotate_chunks, by: [0, 1]))
 
     // every chunk writes the same header: chunk 0's is used
     def headers = ANNOTATE_FRAGMENTS.out.header
