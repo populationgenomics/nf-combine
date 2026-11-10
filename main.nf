@@ -109,9 +109,10 @@ def metamistProject() {
     params.accessLevel == 'test' ? "${params.dataset}-test" : params.dataset
 }
 
-// gs://bucket/path for cloud paths (Path.toString() drops the scheme), a plain path locally
+// gs://bucket/path for cloud paths (Path.toString() drops the scheme), a plain path locally. No trailing slash: a
+// cloud directory's toUriString() ends in one
 def uriOf(path) {
-    path.scheme == 'file' ? path.toString() : path.toUriString()
+    (path.scheme == 'file' ? path.toString() : path.toUriString()).replaceAll('/+$', '')
 }
 
 // a list from config, or a comma/space separated string from the command line

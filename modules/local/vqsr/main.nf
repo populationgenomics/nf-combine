@@ -266,7 +266,7 @@ process CONCAT_VCFS {
  * Each fragment is annotated against its own shard's VQSR VCF, not the genome-wide one: without a region, bcftools
  * reads the annotation file from the start of the fragment's chromosome, so every fragment would read most of a
  * chromosome. Fragments and VQSR VCFs come in partition order, and are paired by position: their names aren't
- * expected to match. Each pair must hold the same records: their index record counts are compared before annotating.
+ * expected to match. Each pair must hold the same records: their record counts are compared before annotating.
  *
  * Every fragment, and the header, gets VQSR's header lines from -h, whether or not it has records: so every
  * fragment of every chunk has the same header.
@@ -322,9 +322,10 @@ process ANNOTATE_FRAGMENTS {
         vcf=\${fragments[i]}
         vqsr_vcf=\${vqsr_vcfs[i]}
         name=\${vcf%.bgz}
-        # read from the indexes, named directly: bcftools only finds a .tbi itself for a name ending .vcf.gz
-        records=\$(bcftools index -n \$vcf.tbi)
-        if [[ \$records != \$(bcftools index -n \$vqsr_vcf.tbi) ]]; then
+        # counted by reading the records: neither Hail's nor GATK's tabix indexes hold count metadata, so
+        # `bcftools index -n` gives 0 for both, and every fragment would be taken as empty
+        records=\$(bcftools view -H \$vcf | wc -l)
+        if [[ \$records != \$(bcftools view -H \$vqsr_vcf | wc -l) ]]; then
             echo "\$vcf and \$vqsr_vcf hold different numbers of records: the exports' partitions don't match" >&2
             exit 1
         fi
