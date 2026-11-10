@@ -37,6 +37,11 @@ def manifestNames(manifest) {
     manifest.readLines().collect { line -> line.trim() }.findAll { line -> line }
 }
 
+// a process output's files as a list: a glob matching one file gives a lone path, which is itself iterable
+def asList(files) {
+    files instanceof java.nio.file.Path ? [files] : files as List
+}
+
 // a vcf export, in chunks: [[VDS name, chunk index, shard VCFs, their indexes]], in genomic order
 def chunked(key, dir, names, size) {
     def batches = names.collate(size)
@@ -68,12 +73,14 @@ workflow VQSR {
         chunked(plan.name, plan.sites_only, manifestNames(sites_only), vqsr.fragments_per_job)
     }
 
-    // the whole fragments, chunked like the sites-only shards. Both are exported from the dense MT's partitions, so
-    // a whole fragment holds the same records as the sites-only shard of the same name
+    // the whole fragments, chunked like the sites-only shards. Both are exported from the dense MT's partitions, and
+    // listed in partition order, so the nth whole fragment holds the same records as the nth sites-only shard. Their
+    // names aren't expected to match: they're paired by position alone, so only their counts are checked
     def whole_chunks = densified.flatMap { plan, sites_only, _separate_header, whole ->
         def names = manifestNames(whole)
-        if (names != manifestNames(sites_only)) {
-            error("${plan.name}: the whole fragments and sites-only shards are different partitions, so can't be paired")
+        def shard_count = manifestNames(sites_only).size()
+        if (names.size() != shard_count) {
+            error("${plan.name}: ${names.size()} whole fragments but ${shard_count} sites-only shards, so they can't be paired")
         }
         chunked(plan.name, plan.whole_fragments, names, vqsr.fragments_per_job)
     }
@@ -105,8 +112,23 @@ workflow VQSR {
         }
     CONCAT_VCFS(vqsr_chunks)
 
-    // each chunk of whole fragments meets the VQSR VCFs of the same shards
-    ANNOTATE_FRAGMENTS(whole_chunks.join(APPLY_VQSR.out.shards, by: [0, 1]))
+    // each chunk's VQSR VCFs, put back in its sites-only shards' order: APPLY_VQSR names each after its input shard,
+    // but a glob output's order is its own
+    def vqsr_shards = chunks
+        .join(APPLY_VQSR.out.shards, by: [0, 1])
+        .map { key, index, shards, _tbis, vcfs, tbis ->
+            def vcf_by_name = asList(vcfs).collectEntries { vcf -> [vcf.name, vcf] }
+            def tbi_by_name = asList(tbis).collectEntries { tbi -> [tbi.name, tbi] }
+            def names = shards.collect { shard -> "${shard.name.replaceFirst(/\.bgz$/, '')}.vqsr.vcf.gz".toString() }
+            def missing = names.findAll { name -> !vcf_by_name.containsKey(name) || !tbi_by_name.containsKey("${name}.tbi".toString()) }
+            if (missing) {
+                error("${key} chunk ${index}: APPLY_VQSR wrote no ${missing}")
+            }
+            [key, index, names.collect { name -> vcf_by_name[name] }, names.collect { name -> tbi_by_name["${name}.tbi".toString()] }]
+        }
+
+    // each chunk of whole fragments meets the VQSR VCFs of the same partitions, both in partition order
+    ANNOTATE_FRAGMENTS(whole_chunks.join(vqsr_shards, by: [0, 1]))
 
     // every chunk writes the same header: chunk 0's is used
     def headers = ANNOTATE_FRAGMENTS.out.header

@@ -265,9 +265,8 @@ process CONCAT_VCFS {
  *
  * Each fragment is annotated against its own shard's VQSR VCF, not the genome-wide one: without a region, bcftools
  * reads the annotation file from the start of the fragment's chromosome, so every fragment would read most of a
- * chromosome. Fragment and shard names differ (Hail adds a per-export hash after part-NNNNN), so both are sorted by
- * name, i.e. by partition, and paired by position. Each pair must hold the same records: their index record counts
- * are compared before annotating.
+ * chromosome. Fragments and VQSR VCFs come in partition order, and are paired by position: their names aren't
+ * expected to match. Each pair must hold the same records: their index record counts are compared before annotating.
  *
  * Every fragment, and the header, gets VQSR's header lines from -h, whether or not it has records: so every
  * fragment of every chunk has the same header.
@@ -290,9 +289,9 @@ process ANNOTATE_FRAGMENTS {
         bcftools view -h "\$1" | sed -n 's/^##INFO=<ID=\\([^,]*\\),.*/\\1/p' | LC_ALL=C sort
     }
 
-    # both sorted by name, so by partition (part-NNNNN-<hash>): the nth fragment pairs with the nth VQSR VCF
-    mapfile -t fragments < <(printf '%s\\n' ${fragments} | LC_ALL=C sort)
-    mapfile -t vqsr_vcfs < <(printf '%s\\n' ${vqsr_vcfs} | LC_ALL=C sort)
+    # both in partition order, as staged: the nth fragment pairs with the nth VQSR VCF
+    fragments=(${fragments})
+    vqsr_vcfs=(${vqsr_vcfs})
     if (( \${#fragments[@]} != \${#vqsr_vcfs[@]} )); then
         echo "\${#fragments[@]} fragments but \${#vqsr_vcfs[@]} VQSR VCFs: the exports' partitions don't match" >&2
         exit 1
