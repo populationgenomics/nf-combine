@@ -58,8 +58,8 @@ Everything that can fail cheaply fails before any cluster starts.
 - Each SG must have exactly one distinct active gVCF path. Several analyses of the same path count as one.
   An SG with none, or with several different paths, fails the run, and every offender is listed in one
   error.
-- Each row records the SG's own dataset (its project, without `-test`). Nothing uses it yet; later stages
-  will.
+- Each row records the SG's own dataset (its project, without `-test`). It splits the VQSR-annotated VCF into
+  one VCF per dataset (`DATASET_VCFS`).
 - The sheet is named for the VDS it makes:
   `<hash>_<count>.tsv`. The hash is the first 38 hex characters of the SHA-256 of the sorted SG IDs, joined,
   then `refresh:` and the sorted refresh IDs if there are any. The hash reaches `main.nf` through the sheet's filename.
@@ -138,7 +138,7 @@ path, so there's no asynchronous publish to wait for. It creates a `vds` analysi
 
 ## Deliberately out of scope (for now)
 
-- Fanning outputs out to each SG's dataset.
+- Fanning outputs other than the dataset VCFs out to each SG's dataset.
 - Guarding against two concurrent runs on the same SG set.
 - Cleaning up temp files and saved plans. The bucket's lifecycle rules handle them.
 - Building a VDS from individual `sgids`, or from a prepared sample sheet.

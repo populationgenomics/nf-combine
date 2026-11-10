@@ -2,12 +2,14 @@
  * Combining for one dataset and sequencing type: Metamist cohorts -> gVCFs -> one Hail VDS,
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
  * The VDS is then densified, on a second cluster, into sites-only VCF shards, and those are filtered with VQSR.
+ * VQSR's results are copied onto the whole (genotypes-inclusive) VCF, which is then split into one VCF per dataset.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
 include { COMBINE } from './modules/local/combine'
 include { DENSIFY } from './modules/local/densify'
 include { VQSR } from './subworkflows/local/vqsr'
+include { DATASET_VCFS } from './subworkflows/local/dataset_vcfs'
 
 /*
  * Types only: the defaults are in nextflow.config, which conf/base.config reads before this script is parsed.
@@ -72,9 +74,14 @@ params {
  * (conf/base.config) only applies them, so the VDS path and the run records can't drift apart.
  */
 
+// a dataset's bucket, at the run's access level
+def bucketOf(dataset) {
+    "gs://cpg-${dataset}-${params.accessLevel == 'test' ? 'test' : 'main'}"
+}
+
 // the workflow-running dataset's bucket
 def bucket() {
-    "gs://cpg-${params.dataset}-${params.accessLevel == 'test' ? 'test' : 'main'}"
+    bucketOf(params.dataset)
 }
 
 // the bucket, or output_root for local runs (absolute, whatever the launch dir)
@@ -212,6 +219,29 @@ def planVqsr(densify_plan) {
     ]
 }
 
+/*
+ * One VCF per dataset with SGs in the sheet: the VQSR-annotated whole VCF, cut down to the dataset's SGs and the
+ * sites where they have a non-reference allele. Written to the dataset's bucket (<output_root>/<dataset> for local
+ * runs), named for the VDS. If it exists, an earlier run finished it. Returns [[VDS name, plan]].
+ */
+def planDatasetVcfs(sheet) {
+    def vds = sheet.baseName
+    def by_dataset = sheet.splitCsv(header: true, sep: '\t').groupBy { row -> row.dataset }
+    by_dataset.collect { dataset, rows ->
+        def root = params.output_root ? "${uriOf(file(params.output_root))}/${dataset}" : bucketOf(dataset)
+        def output = "${root}/vcf/${params.sequencing_type}/${vds}.vcf.bgz"
+        def plan = [
+            name: "${vds}_${dataset}",
+            dataset: dataset,
+            // sorted, as the sample order is the VCF's
+            sgs: rows.collect { row -> row.sg_id }.toSorted(),
+            final_output: output,
+            done: file(output).exists(),
+        ]
+        [vds, plan]
+    }
+}
+
 workflow {
     validateParams()
 
@@ -300,4 +330,17 @@ workflow {
     }
 
     VQSR(densified.todo, vqsr)
+
+    def dataset_plans = built
+        .flatMap { sheet, _base -> planDatasetVcfs(sheet) }
+        .branch { _vds, plan ->
+            done: plan.done
+            todo: true
+        }
+
+    dataset_plans.done.subscribe { _vds, plan ->
+        log.info("${plan.final_output} already exists: the ${plan.dataset} VCF is already done")
+    }
+
+    DATASET_VCFS(VQSR.out.fragments, VQSR.out.header, dataset_plans.todo)
 }

@@ -75,3 +75,27 @@ def test_many_fragments_compose_in_rounds_in_order():
     ]
     # the first round keeps the manifest order
     assert commands[0].split()[4:6] == ['gs://b/0', 'gs://b/1']
+
+
+def test_a_manifest_of_paths_composes_every_fragment_then_copies_to_the_final_output(tmp_path):
+    """Without --vcf_dir or --sizes: the manifest's gs:// paths are composed as they are, empty or not."""
+    paths = ['gs://work/a/header.vcf.bgz', 'gs://work/b/part-0.subset.vcf.bgz', 'gs://work/a/eof.bgz']
+    manifest = tmp_path / 'fragments.txt'
+    manifest.write_text(''.join(f'{path}\n' for path in paths))
+    script = tmp_path / 'compose.sh'
+    main([
+        '--manifest', str(manifest),
+        '--output', 'gs://work/a/compose/out.vcf.bgz',
+        '--temp_dir', 'gs://work/a/compose/intermediates',
+        '--final_output', 'gs://dataset/vcf/out.vcf.bgz',
+        '--script', str(script),
+    ])  # fmt: skip
+    commands = [line for line in script.read_text().splitlines() if line.startswith('gcloud')]
+    assert commands == [
+        f'gcloud storage objects compose {" ".join(paths)} gs://work/a/compose/out.vcf.bgz',
+        'gcloud storage cp gs://work/a/compose/out.vcf.bgz gs://dataset/vcf/out.vcf.bgz',
+    ]
+
+
+def test_without_a_final_output_nothing_is_copied(tmp_path):
+    assert not any(command.startswith('gcloud storage cp') for command in run(tmp_path, {'h': 500, 'p': 100}))

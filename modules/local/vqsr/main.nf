@@ -260,16 +260,16 @@ process CONCAT_VCFS {
 
 /*
  * One chunk of whole (genotypes-inclusive) fragments: each gets the FILTER and VQSR INFO fields of the VQSR VCF
- * from the same partition, and is written headless, for a compose to join after one header.
+ * from the same partition, and is written as a VCF with its header. The chunk's header is also written alone, as
+ * text, so the dataset VCFs' headers (DATASET_VCFS) can be made without staging any fragment.
  *
  * Each fragment is annotated against its own shard's VQSR VCF, not the genome-wide one: without a region, bcftools
  * reads the annotation file from the start of the fragment's chromosome, so every fragment would read most of a
  * chromosome. Fragment and shard share a partition name (part-NNNNN), and must hold the same records: their index
  * record counts are compared before annotating.
  *
- * bcftools ends every bgzipped file with a BGZF EOF block. htsjdk (GATK) reads one in the middle of a file as the
- * end of the file, so it's cut from every output. The compose appends eof.bgz, last. Every chunk writes the header
- * and EOF block; any chunk's will do.
+ * Every fragment, and the header, gets VQSR's header lines from -h, whether or not it has records: so every
+ * fragment of every chunk has the same header.
  */
 process ANNOTATE_FRAGMENTS {
     tag "${key} chunk ${chunk}"
@@ -280,22 +280,10 @@ process ANNOTATE_FRAGMENTS {
 
     output:
     tuple val(key), val(chunk), path('*.annotated.vcf.bgz'), emit: fragments
-    tuple val(key), val(chunk), path('header.vcf.bgz'), path('eof.bgz'), emit: header
+    tuple val(key), val(chunk), path('header.vcf'), emit: header
 
     script:
     """
-    # the BGZF EOF block, as hex
-    EOF_BLOCK=1f8b08040000000000ff0600424302001b0003000000000000000000
-
-    # cuts the trailing BGZF EOF block off \$1, after checking it's there
-    strip_eof() {
-        if [[ \$(tail -c 28 "\$1" | od -An -tx1 | tr -d ' \\n') != "\$EOF_BLOCK" ]]; then
-            echo "\$1 doesn't end in a BGZF EOF block" >&2
-            exit 1
-        fi
-        truncate -s \$(( \$(wc -c < "\$1") - 28 )) "\$1"
-    }
-
     # INFO IDs in a VCF's header, sorted for comm
     info_ids() {
         bcftools view -h "\$1" | sed -n 's/^##INFO=<ID=\\([^,]*\\),.*/\\1/p' | LC_ALL=C sort
@@ -313,14 +301,16 @@ process ANNOTATE_FRAGMENTS {
     columns=FILTER\$(printf ',INFO/%s' \$vqsr_fields)
     echo "Copying \$columns"
 
-    # the fragments' header, plus VQSR's FILTER lines and its new INFO lines. Built from header lines alone, as any
-    # shard may be empty
+    # VQSR's FILTER lines and its new INFO lines. Built from header lines alone, as any shard may be empty
     bcftools view -h \$first.vqsr.vcf.gz \\
-        | grep -E "^##FILTER=|^##INFO=<ID=(\$(paste -sd '|' <<< "\$vqsr_fields"))," > vqsr_header_lines.txt
+        | grep -E "^##FILTER=|^##INFO=<ID=(\$(paste -sd '|' - <<< "\$vqsr_fields"))," > vqsr_header_lines.txt
+    # the dataset VCFs' headers come from these lines alone
+    if ! grep -q '^##INFO=<ID=AS_VQSLOD,' vqsr_header_lines.txt; then
+        echo "No AS_VQSLOD header line was taken from \$first.vqsr.vcf.gz" >&2
+        exit 1
+    fi
     bcftools view --no-version -h \${fragments[0]} \\
-        | bcftools annotate --no-version -h vqsr_header_lines.txt -Oz -o header.vcf.bgz
-    tail -c 28 header.vcf.bgz > eof.bgz
-    strip_eof header.vcf.bgz
+        | bcftools annotate --no-version -h vqsr_header_lines.txt -Ov -o header.vcf
 
     for vcf in \${fragments[@]}; do
         name=\${vcf%.bgz}
@@ -330,22 +320,22 @@ process ANNOTATE_FRAGMENTS {
             echo "\$vcf and \$name.vqsr.vcf.gz hold different numbers of records: the exports' partitions don't match" >&2
             exit 1
         fi
-        # an empty partition's headless fragment is empty. bcftools (1.21 at least) segfaults annotating an empty VCF
-        # from another
+        # bcftools (1.21 at least) segfaults annotating an empty VCF from another: an empty partition's header alone
+        # is annotated
         if (( records == 0 )); then
-            : > \$name.annotated.vcf.bgz
+            bcftools view --no-version -h \$vcf \\
+                | bcftools annotate --no-version -h vqsr_header_lines.txt -Oz -o \$name.annotated.vcf.bgz
             continue
         fi
         # exact: a record takes VQSR's fields only from the record with all of its alleles
-        bcftools annotate --no-version --pair-logic exact -a \$name.vqsr.vcf.gz -c \$columns \$vcf -Ou \\
-            | bcftools view -H --threads ${task.cpus} -Oz -o \$name.annotated.vcf.bgz
-        strip_eof \$name.annotated.vcf.bgz
+        bcftools annotate --no-version --pair-logic exact -a \$name.vqsr.vcf.gz -c \$columns -h vqsr_header_lines.txt \\
+            --threads ${task.cpus} -Oz -o \$name.annotated.vcf.bgz \$vcf
     done
     """
 
     stub:
     """
-    touch header.vcf.bgz eof.bgz
+    touch header.vcf
     for vcf in ${fragments}; do
         touch \${vcf%.bgz}.annotated.vcf.bgz
     done

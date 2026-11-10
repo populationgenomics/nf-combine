@@ -1,6 +1,6 @@
 /*
  * Densified exports -> one VQSR-filtered sites-only VCF per VDS, and the whole (genotypes-inclusive) fragments with
- * VQSR's filters and annotations, headless, for a compose to join into one VCF.
+ * VQSR's filters and annotations, each a VCF with its header, for DATASET_VCFS to split by dataset.
  *
  * densified: [plan from planVqsr() in main.nf, header-per-shard manifest, separate-header manifest,
  *            whole fragments' (header-per-shard) manifest]
@@ -108,25 +108,16 @@ workflow VQSR {
     // each chunk of whole fragments meets the VQSR VCFs of the same shards
     ANNOTATE_FRAGMENTS(whole_chunks.join(APPLY_VQSR.out.shards, by: [0, 1]))
 
-    // every chunk writes the same header and EOF block: chunk 0's are used
+    // every chunk writes the same header: chunk 0's is used
     def headers = ANNOTATE_FRAGMENTS.out.header
-        .filter { _key, index, _header, _eof -> index == 0 }
-        .map { key, _index, header, eof -> [key, header, eof] }
-
-    // the fragments in genomic order: chunks by index, and within one, by partition name (part-NNNNN, zero-padded).
-    // A chunk of one fragment emits a lone path, hence the flatten
-    def annotated_fragments = ANNOTATE_FRAGMENTS.out.fragments
-        .map { key, index, fragments -> [key, [index, [fragments].flatten().toSorted { fragment -> fragment.name }]] }
-        .groupTuple()
-        .join(headers)
-        .join(plans)
-        .map { _key, parts, header, eof, plan ->
-            [plan, header, parts.toSorted { part -> part[0] }.collectMany { part -> part[1] }, eof]
-        }
+        .filter { _key, index, _header -> index == 0 }
+        .map { key, _index, text -> [key, text] }
 
     emit:
     // [plan, VQSR sites-only VCF, its index]
     vcf = CONCAT_VCFS.out
-    // [plan, header, headless whole fragments in genomic order, BGZF EOF block]: composed in that order, one VCF
-    annotated = annotated_fragments
+    // [VDS name, chunk index, its annotated whole fragments, each a VCF with the same header]: chunks in no order
+    fragments = ANNOTATE_FRAGMENTS.out.fragments
+    // [VDS name, the annotated whole fragments' header, as text]
+    header = headers
 }
