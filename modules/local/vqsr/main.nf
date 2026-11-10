@@ -1,8 +1,9 @@
 /*
  * GATK VQSR on the sites-only VCFs, ported from cpg-flow-seqr-loader's TrainVqsr*, GatherTrainedVqsrSnpTranches,
  * RunSnpVqsrOnFragments and RunIndelVqsr stages. The models are trained on the composed VCF (COMPOSE_SITES_ONLY).
- * The SNP tranches are trained and applied shard by shard, on the header-per-shard export, with many shards per
- * task. Indel VQSR is applied last, to the joined SNP-recalibrated VCF.
+ * The SNP tranches are trained shard by shard, on the header-per-shard export, with many shards per task. SNP and
+ * indel VQSR are then applied to each shard, and the shards concatenated into the genome-wide VQSR VCF. Each shard's
+ * VQSR VCF is also copied onto the whole fragment from the same partition (ANNOTATE_FRAGMENTS).
  *
  * vqsr holds the settings (planned in main.nf): filter levels, and the resources, as {name: VCF path}. The
  * resource files and their indexes are staged as refs, and are found by their basenames.
@@ -177,19 +178,22 @@ process GATHER_VQSR_SNP_TRANCHES {
 }
 
 /*
- * One chunk of shards: SNP VQSR applied to each, then the chunk gathered into one VCF. The shards arrive in
- * genomic order, so the chunk's VCF is sorted.
+ * One chunk of shards: SNP then indel VQSR applied to each, then the chunk gathered into one VCF. The shards arrive
+ * in genomic order, so the chunk's VCF is sorted. Each shard's VQSR VCF is kept too: ANNOTATE_FRAGMENTS copies it
+ * onto the whole fragment from the same partition. The indel model is genome-wide, and ApplyVQSR looks its
+ * recalibrations up by locus, so applying it shard by shard gives the same result as applying it to the joined VCF.
  */
-process APPLY_VQSR_SNP {
+process APPLY_VQSR {
     tag "${key} chunk ${chunk}"
     container params.gatk_container
 
     input:
-    tuple val(key), val(chunk), path(vcfs), path(tbis), path(recals), path(recal_idxs), path(tranches)
+    tuple val(key), val(chunk), path(vcfs), path(tbis), path(snp_recals), path(snp_recal_idxs), path(snp_tranches), path(indel_recal), path(indel_recal_idx), path(indel_tranches)
     val vqsr
 
     output:
-    tuple val(key), val(chunk), path("chunk_${chunk}.vcf.gz"), path("chunk_${chunk}.vcf.gz.tbi")
+    tuple val(key), val(chunk), path("chunk_${chunk}.vcf.gz"), path("chunk_${chunk}.vcf.gz.tbi"), emit: chunk
+    tuple val(key), val(chunk), path('*.vqsr.vcf.gz'), path('*.vqsr.vcf.gz.tbi'), emit: shards
 
     script:
     """
@@ -197,13 +201,24 @@ process APPLY_VQSR_SNP {
     for vcf in ${vcfs}; do
         ${linkShard()}
         gatk --java-options "${javaOptions(task)}" ApplyVQSR \\
+            --tmp-dir . \\
             -V \$name.vcf.bgz \\
-            -O \$name.vqsr.vcf.gz \\
+            -O \$name.snp.vcf.gz \\
             --recal-file \$name.recal \\
-            --tranches-file ${tranches} \\
+            --tranches-file ${snp_tranches} \\
             --truth-sensitivity-filter-level ${vqsr.snp_filter_level} \\
             --use-allele-specific-annotations \\
             -mode SNP
+        gatk --java-options "${javaOptions(task)}" ApplyVQSR \\
+            --tmp-dir . \\
+            -V \$name.snp.vcf.gz \\
+            -O \$name.vqsr.vcf.gz \\
+            --recal-file ${indel_recal} \\
+            --tranches-file ${indel_tranches} \\
+            --truth-sensitivity-filter-level ${vqsr.indel_filter_level} \\
+            --use-allele-specific-annotations \\
+            -mode INDEL
+        rm \$name.snp.vcf.gz \$name.snp.vcf.gz.tbi
         gather+=(-I \$name.vqsr.vcf.gz)
     done
 
@@ -214,58 +229,125 @@ process APPLY_VQSR_SNP {
     stub:
     """
     touch chunk_${chunk}.vcf.gz chunk_${chunk}.vcf.gz.tbi
+    for vcf in ${vcfs}; do
+        touch \${vcf%.bgz}.vqsr.vcf.gz \${vcf%.bgz}.vqsr.vcf.gz.tbi
+    done
     """
 }
 
-// sorted, non-overlapping VCFs, in order -> one VCF
+// the chunks' VCFs, sorted and non-overlapping, in order -> the genome-wide VQSR VCF. Published to plan.vqsr_dir
+// (conf/base.config)
 process CONCAT_VCFS {
-    tag "${key}"
+    tag "${plan.name}"
     container params.bcftools_container
 
     input:
-    tuple val(key), path(vcfs), path(tbis)
-
-    output:
-    tuple val(key), path('snp_vqsr.vcf.gz'), path('snp_vqsr.vcf.gz.tbi')
-
-    script:
-    """
-    bcftools concat --threads ${task.cpus} ${vcfs} -Oz -o snp_vqsr.vcf.gz -W=tbi
-    """
-
-    stub:
-    """
-    touch snp_vqsr.vcf.gz snp_vqsr.vcf.gz.tbi
-    """
-}
-
-// published to plan.vqsr_dir (conf/base.config)
-process APPLY_VQSR_INDEL {
-    tag "${plan.name}"
-    container params.gatk_container
-
-    input:
-    tuple val(plan), path(snp_vcf), path(snp_tbi), path(recal), path(recal_idx), path(tranches)
-    val vqsr
+    tuple val(plan), path(vcfs), path(tbis)
 
     output:
     tuple val(plan), path(plan.vqsr_name), path("${plan.vqsr_name}.tbi")
 
     script:
     """
-    gatk --java-options "${javaOptions(task)}" ApplyVQSR \\
-        --tmp-dir . \\
-        -V ${snp_vcf} \\
-        -O ${plan.vqsr_name} \\
-        --recal-file ${recal} \\
-        --tranches-file ${tranches} \\
-        --truth-sensitivity-filter-level ${vqsr.indel_filter_level} \\
-        --use-allele-specific-annotations \\
-        -mode INDEL
+    bcftools concat --threads ${task.cpus} ${vcfs} -Oz -o ${plan.vqsr_name} -W=tbi
     """
 
     stub:
     """
     touch ${plan.vqsr_name} ${plan.vqsr_name}.tbi
+    """
+}
+
+/*
+ * One chunk of whole (genotypes-inclusive) fragments: each gets the FILTER and VQSR INFO fields of the VQSR VCF
+ * from the same partition, and is written headless, for a compose to join after one header.
+ *
+ * Each fragment is annotated against its own shard's VQSR VCF, not the genome-wide one: without a region, bcftools
+ * reads the annotation file from the start of the fragment's chromosome, so every fragment would read most of a
+ * chromosome. Fragment and shard share a partition name (part-NNNNN), and must hold the same records: their index
+ * record counts are compared before annotating.
+ *
+ * bcftools ends every bgzipped file with a BGZF EOF block. htsjdk (GATK) reads one in the middle of a file as the
+ * end of the file, so it's cut from every output. The compose appends eof.bgz, last. Every chunk writes the header
+ * and EOF block; any chunk's will do.
+ */
+process ANNOTATE_FRAGMENTS {
+    tag "${key} chunk ${chunk}"
+    container params.bcftools_container
+
+    input:
+    tuple val(key), val(chunk), path(fragments), path(fragment_tbis), path(vqsr_vcfs), path(vqsr_tbis)
+
+    output:
+    tuple val(key), val(chunk), path('*.annotated.vcf.bgz'), emit: fragments
+    tuple val(key), val(chunk), path('header.vcf.bgz'), path('eof.bgz'), emit: header
+
+    script:
+    """
+    # the BGZF EOF block, as hex
+    EOF_BLOCK=1f8b08040000000000ff0600424302001b0003000000000000000000
+
+    # cuts the trailing BGZF EOF block off \$1, after checking it's there
+    strip_eof() {
+        if [[ \$(tail -c 28 "\$1" | od -An -tx1 | tr -d ' \\n') != "\$EOF_BLOCK" ]]; then
+            echo "\$1 doesn't end in a BGZF EOF block" >&2
+            exit 1
+        fi
+        truncate -s \$(( \$(wc -c < "\$1") - 28 )) "\$1"
+    }
+
+    # INFO IDs in a VCF's header, sorted for comm
+    info_ids() {
+        bcftools view -h "\$1" | sed -n 's/^##INFO=<ID=\\([^,]*\\),.*/\\1/p' | LC_ALL=C sort
+    }
+
+    fragments=(${fragments})
+    first=\${fragments[0]%.bgz}
+
+    # VQSR's INFO fields are the ones its VCF has and the fragments don't. The rest are left as the fragments have them
+    vqsr_fields=\$(LC_ALL=C comm -13 <(info_ids \${fragments[0]}) <(info_ids \$first.vqsr.vcf.gz))
+    if ! grep -qx AS_VQSLOD <<< "\$vqsr_fields"; then
+        echo "\$first.vqsr.vcf.gz has no AS_VQSLOD the fragments lack: is it a VQSR VCF? New fields: \$vqsr_fields" >&2
+        exit 1
+    fi
+    columns=FILTER\$(printf ',INFO/%s' \$vqsr_fields)
+    echo "Copying \$columns"
+
+    # the fragments' header, plus VQSR's FILTER lines and its new INFO lines. Built from header lines alone, as any
+    # shard may be empty
+    bcftools view -h \$first.vqsr.vcf.gz \\
+        | grep -E "^##FILTER=|^##INFO=<ID=(\$(paste -sd '|' <<< "\$vqsr_fields"))," > vqsr_header_lines.txt
+    bcftools view --no-version -h \${fragments[0]} \\
+        | bcftools annotate --no-version -h vqsr_header_lines.txt -Oz -o header.vcf.bgz
+    tail -c 28 header.vcf.bgz > eof.bgz
+    strip_eof header.vcf.bgz
+
+    for vcf in \${fragments[@]}; do
+        name=\${vcf%.bgz}
+        # read from the indexes, named directly: bcftools only finds a .tbi itself for a name ending .vcf.gz
+        records=\$(bcftools index -n \$vcf.tbi)
+        if [[ \$records != \$(bcftools index -n \$name.vqsr.vcf.gz.tbi) ]]; then
+            echo "\$vcf and \$name.vqsr.vcf.gz hold different numbers of records: the exports' partitions don't match" >&2
+            exit 1
+        fi
+        # an empty partition's headless fragment is empty. bcftools (1.21 at least) segfaults annotating an empty VCF
+        # from another
+        if (( records == 0 )); then
+            : > \$name.annotated.vcf.bgz
+            continue
+        fi
+        # exact: a record takes VQSR's fields only from the record with all of its alleles
+        bcftools annotate --no-version --pair-logic exact -a \$name.vqsr.vcf.gz -c \$columns \$vcf -Ou \\
+            | bcftools view -H --threads ${task.cpus} -Oz -o \$name.annotated.vcf.bgz
+        strip_eof \$name.annotated.vcf.bgz
+    done
+    """
+
+    stub:
+    """
+    touch header.vcf.bgz eof.bgz
+    for vcf in ${fragments}; do
+        touch \${vcf%.bgz}.annotated.vcf.bgz
+    done
     """
 }
