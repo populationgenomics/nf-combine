@@ -19,8 +19,7 @@ process BUILD_SAMPLESHEET {
     build_samplesheet.py \\
         --project ${project} \\
         --sequencing-type ${sequencing_type} \\
-        --cohorts ${cohorts.join(' ')} \\
-        ${refresh_ids}
+        --cohorts ${cohorts.join(' ')} ${refresh_ids}
     """
 
     // task.ext.fixtures, set from config in the stub tests, is a directory holding both outputs

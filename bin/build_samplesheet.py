@@ -59,7 +59,7 @@ query BuildCombineSamplesheet($project: String!, $cohorts: [String!]!) {
         }
     }
     project(name: $project) {
-        analyses(type: {eq: "combiner"}, active: {eq: true}) {
+        analyses(type: {eq: "vds"}, active: {eq: true}) {
             id
             outputs
             meta
