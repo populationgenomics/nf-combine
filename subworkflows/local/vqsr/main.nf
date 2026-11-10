@@ -32,12 +32,12 @@ def stagedResources(vqsr, names) {
     names.collectMany { name -> withIndex(vqsr.resources[name]) }
 }
 
-// the shard names in a header-per-shard export's manifest, in genomic order
+// the shard names in a vcf export's manifest, in genomic order
 def manifestNames(manifest) {
     manifest.readLines().collect { line -> line.trim() }.findAll { line -> line }
 }
 
-// a header-per-shard export, in chunks: [[VDS name, chunk index, shard VCFs, their indexes]], in genomic order
+// a vcf export, in chunks: [[VDS name, chunk index, shard VCFs, their indexes]], in genomic order
 def chunked(key, dir, names, size) {
     def batches = names.collate(size)
     (0..<batches.size()).collect { index ->

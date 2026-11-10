@@ -265,8 +265,9 @@ process CONCAT_VCFS {
  *
  * Each fragment is annotated against its own shard's VQSR VCF, not the genome-wide one: without a region, bcftools
  * reads the annotation file from the start of the fragment's chromosome, so every fragment would read most of a
- * chromosome. Fragment and shard share a partition name (part-NNNNN), and must hold the same records: their index
- * record counts are compared before annotating.
+ * chromosome. Fragment and shard names differ (Hail adds a per-export hash after part-NNNNN), so both are sorted by
+ * name, i.e. by partition, and paired by position. Each pair must hold the same records: their index record counts
+ * are compared before annotating.
  *
  * Every fragment, and the header, gets VQSR's header lines from -h, whether or not it has records: so every
  * fragment of every chunk has the same header.
@@ -289,35 +290,43 @@ process ANNOTATE_FRAGMENTS {
         bcftools view -h "\$1" | sed -n 's/^##INFO=<ID=\\([^,]*\\),.*/\\1/p' | LC_ALL=C sort
     }
 
-    fragments=(${fragments})
-    first=\${fragments[0]%.bgz}
+    # both sorted by name, so by partition (part-NNNNN-<hash>): the nth fragment pairs with the nth VQSR VCF
+    mapfile -t fragments < <(printf '%s\\n' ${fragments} | LC_ALL=C sort)
+    mapfile -t vqsr_vcfs < <(printf '%s\\n' ${vqsr_vcfs} | LC_ALL=C sort)
+    if (( \${#fragments[@]} != \${#vqsr_vcfs[@]} )); then
+        echo "\${#fragments[@]} fragments but \${#vqsr_vcfs[@]} VQSR VCFs: the exports' partitions don't match" >&2
+        exit 1
+    fi
+    first=\${vqsr_vcfs[0]}
 
     # VQSR's INFO fields are the ones its VCF has and the fragments don't. The rest are left as the fragments have them
-    vqsr_fields=\$(LC_ALL=C comm -13 <(info_ids \${fragments[0]}) <(info_ids \$first.vqsr.vcf.gz))
+    vqsr_fields=\$(LC_ALL=C comm -13 <(info_ids \${fragments[0]}) <(info_ids \$first))
     if ! grep -qx AS_VQSLOD <<< "\$vqsr_fields"; then
-        echo "\$first.vqsr.vcf.gz has no AS_VQSLOD the fragments lack: is it a VQSR VCF? New fields: \$vqsr_fields" >&2
+        echo "\$first has no AS_VQSLOD the fragments lack: is it a VQSR VCF? New fields: \$vqsr_fields" >&2
         exit 1
     fi
     columns=FILTER\$(printf ',INFO/%s' \$vqsr_fields)
     echo "Copying \$columns"
 
     # VQSR's FILTER lines and its new INFO lines. Built from header lines alone, as any shard may be empty
-    bcftools view -h \$first.vqsr.vcf.gz \\
+    bcftools view -h \$first \\
         | grep -E "^##FILTER=|^##INFO=<ID=(\$(paste -sd '|' - <<< "\$vqsr_fields"))," > vqsr_header_lines.txt
     # the dataset VCFs' headers come from these lines alone
     if ! grep -q '^##INFO=<ID=AS_VQSLOD,' vqsr_header_lines.txt; then
-        echo "No AS_VQSLOD header line was taken from \$first.vqsr.vcf.gz" >&2
+        echo "No AS_VQSLOD header line was taken from \$first" >&2
         exit 1
     fi
     bcftools view --no-version -h \${fragments[0]} \\
         | bcftools annotate --no-version -h vqsr_header_lines.txt -Ov -o header.vcf
 
-    for vcf in \${fragments[@]}; do
+    for i in \${!fragments[@]}; do
+        vcf=\${fragments[i]}
+        vqsr_vcf=\${vqsr_vcfs[i]}
         name=\${vcf%.bgz}
         # read from the indexes, named directly: bcftools only finds a .tbi itself for a name ending .vcf.gz
         records=\$(bcftools index -n \$vcf.tbi)
-        if [[ \$records != \$(bcftools index -n \$name.vqsr.vcf.gz.tbi) ]]; then
-            echo "\$vcf and \$name.vqsr.vcf.gz hold different numbers of records: the exports' partitions don't match" >&2
+        if [[ \$records != \$(bcftools index -n \$vqsr_vcf.tbi) ]]; then
+            echo "\$vcf and \$vqsr_vcf hold different numbers of records: the exports' partitions don't match" >&2
             exit 1
         fi
         # bcftools (1.21 at least) segfaults annotating an empty VCF from another: an empty partition's header alone
@@ -328,7 +337,7 @@ process ANNOTATE_FRAGMENTS {
             continue
         fi
         # exact: a record takes VQSR's fields only from the record with all of its alleles
-        bcftools annotate --no-version --pair-logic exact -a \$name.vqsr.vcf.gz -c \$columns -h vqsr_header_lines.txt \\
+        bcftools annotate --no-version --pair-logic exact -a \$vqsr_vcf -c \$columns -h vqsr_header_lines.txt \\
             --threads ${task.cpus} -Oz -o \$name.annotated.vcf.bgz \$vcf
     done
     """
