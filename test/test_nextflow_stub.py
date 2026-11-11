@@ -340,7 +340,17 @@ def test_intervals_must_be_in_gcs(run):
 
 def dataset_vcf(out: Path, suffix: str = '') -> Path:
     """Where a run writes the ds dataset's VCF (suffix '_seqr': its seqr VCF), named for the VDS."""
-    return out / PROJECT / 'vcf' / 'genome' / f'{vds_name(SGS, [])}{suffix}.vcf.bgz'
+    return out / PROJECT / 'joint_vcf' / 'genome' / f'{vds_name(SGS, [])}{suffix}.vcf.bgz'
+
+
+def test_a_vds_whose_dataset_vcfs_all_exist_is_not_densified(run, tmp_path):
+    out = tmp_path / 'results'
+    touch(vds_path(out) / 'variant_data' / '_SUCCESS')
+    touch(dataset_vcf(out))
+    result, _out, tasks = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "it isn't densified" in result.stdout + result.stderr
+    assert not task_names(tasks, 'DENSIFY')
 
 
 def test_seqr_vcf_is_made_from_an_existing_dataset_vcf(run, tmp_path):
@@ -396,8 +406,8 @@ def test_seqr_vcf_needs_one_participant_per_sg(run, sheet, participants, message
 
 def test_real_reheader_commands_as_rendered(run, sheet, tmp_path):
     """
-    A real (not stub) run whose VDS and dataset VCF already exist, so it only densifies and reheaders, with the
-    tools replaced by fakes on PATH. gcloud and bcftools log each call; gcloud's copies make an empty destination.
+    A real (not stub) run whose VDS and dataset VCF already exist, so it only reheaders (nothing is densified), with
+    the tools replaced by fakes on PATH. gcloud and bcftools log each call; gcloud's copies make an empty destination.
     """
     out = tmp_path / 'results'
     touch(vds_path(out) / 'variant_data' / '_SUCCESS')
@@ -405,9 +415,6 @@ def test_real_reheader_commands_as_rendered(run, sheet, tmp_path):
     log = 'echo "$(basename "$0") $*" >> calls.log'
     fakes = {
         'build_samplesheet.py': f'cp {sheet} {vds_name(SGS, [])}.tsv; touch base_vds.txt',
-        'submit_hail.py': (
-            'echo {} > densify_output.json; touch sites_only.manifest separate_header.manifest whole_fragments.manifest'
-        ),
         'gcloud': f'{log}\nif [[ $2 == cp ]]; then touch "$4"; fi',
         'bcftools': f"{log}\nif [[ $1 == query ]]; then printf '%s\\n' CPG1-EXT CPG2-EXT CPG3-EXT; fi",
     }
@@ -415,6 +422,7 @@ def test_real_reheader_commands_as_rendered(run, sheet, tmp_path):
 
     result, out, tasks = run('-c', str(config), '--seqr_vcf', PROJECT, stub=False)
     assert result.returncode == 0, result.stdout + result.stderr
+    assert not task_names(tasks, 'DENSIFY')
 
     seqr = str(dataset_vcf(out, '_seqr'))
     calls = [line.split() for line in task_output(tmp_path, tasks, 'REHEADER_VCF', 'calls.log').splitlines()]

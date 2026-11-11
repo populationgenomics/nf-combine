@@ -1,7 +1,8 @@
 /*
  * Combining for one dataset and sequencing type: Metamist cohorts -> gVCFs -> one Hail VDS,
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
- * The VDS is then densified, on a second cluster, into sites-only VCF shards, and those are filtered with VQSR.
+ * Unless every dataset's VCF of it already exists, the VDS is then densified, on a second cluster, into sites-only
+ * VCF shards, and those are filtered with VQSR.
  * VQSR's results are copied onto the whole (genotypes-inclusive) VCF, which is then split into one VCF per dataset.
  * Each dataset's VCF is registered in its Metamist project. Datasets in seqr_vcf also get a copy of theirs with the
  * samples named by participant, not SG.
@@ -192,6 +193,8 @@ def checkSeqrParticipants(sheet) {
 
 /*
  * A cheap check on the VDS existence, all other checks are done at SampleSheet construction.
+ * Also checks whether every dataset's VCF of the VDS exists: those are all densifying it is for, so if they do, it
+ * isn't densified.
  */
 def planCombine(sheet, discovered_base, refresh, force) {
     // the sheet is named for the VDS it makes: <hash of SG and refresh IDs>_<SG count>.tsv
@@ -211,6 +214,7 @@ def planCombine(sheet, discovered_base, refresh, force) {
         force: force,
         n_sgs: sheet.readLines().count { line -> line.trim() } - 1,
         action: exists ? 'done' : 'combine',
+        dataset_vcfs_done: planDatasetVcfs(sheet).every { _vds, plan -> plan.done },
         // keyed by the VDS name, so a retry finds the plan and report of its earlier attempt
         temp_dir: tempRoot(),
         report: "${tempRoot()}/combine_reports/${sheet.baseName}.json",
@@ -242,21 +246,16 @@ def planDensify(combine_plan) {
 }
 
 /*
- * Where VQSR on a densified VDS writes, in the temp bucket beside the densified outputs and named for the VDS.
- * The composed VCF must share a bucket with the separate-header shards it's composed from.
+ * Where VQSR on a densified VDS composes the sites-only VCF its models are trained on: in the temp bucket, named for
+ * the VDS. It must share a bucket with the separate-header shards it's composed from. VQSR publishes nothing else:
+ * its results go on to the dataset VCFs as task outputs.
  */
 def planVqsr(densify_plan) {
     def name = densify_plan.name
     def dir = "${tempRoot()}/vqsr/${name}"
-    def vqsr_name = "${name}_vqsr.vcf.gz"
     return densify_plan + [
         composed: "${dir}/${name}_sites_only.vcf.bgz",
         compose_temp: "${dir}/compose_intermediates",
-        vqsr_dir: dir,
-        vqsr_name: vqsr_name,
-        vqsr_vcf: "${dir}/${vqsr_name}",
-        // the index is published with the VCF, so if it exists, an earlier run finished VQSR on this VDS
-        done: file("${dir}/${vqsr_name}.tbi").exists(),
     ]
 }
 
@@ -355,9 +354,21 @@ workflow {
 
     COMBINE(planned.combine, hail_lib, cluster, registration)
 
-    // every VDS is densified, whether made by this run or already there
-    def vds_plans = planned.done.map { _sheet, plan -> plan }.mix(COMBINE.out.plan)
-    DENSIFY(vds_plans.map { plan -> planDensify(plan) }, hail_lib, cluster)
+    // a VDS is densified, whether made by this run or already there, unless every dataset's VCF of it exists. VQSR
+    // has no check of its own: its results are task outputs, so any missing dataset VCF needs it run (cached under
+    // -resume)
+    def vds_plans = planned.done.map { _sheet, plan -> plan }
+        .mix(COMBINE.out.plan)
+        .branch { plan ->
+            done: plan.dataset_vcfs_done
+            todo: true
+        }
+
+    vds_plans.done.subscribe { plan ->
+        log.info("Every dataset VCF of ${plan.output} already exists: it isn't densified")
+    }
+
+    DENSIFY(vds_plans.todo.map { plan -> planDensify(plan) }, hail_lib, cluster)
 
     def vqsr = [
         fragments_per_job: params.vqsr_fragments_per_job,
@@ -376,16 +387,8 @@ workflow {
     def densified = DENSIFY.out.shards
         .filter { _plan, _sites_only, _separate_header, _whole_fragments -> params.vqsr }
         .map { plan, sites_only, separate_header, whole_fragments -> [planVqsr(plan), sites_only, separate_header, whole_fragments] }
-        .branch { plan, _sites_only, _separate_header, _whole_fragments ->
-            done: plan.done
-            todo: true
-        }
 
-    densified.done.subscribe { plan, _sites_only, _separate_header, _whole_fragments ->
-        log.info("${plan.vqsr_vcf} already exists: VQSR on this VDS is already done")
-    }
-
-    VQSR(densified.todo, vqsr)
+    VQSR(densified, vqsr)
 
     def dataset_plans = built
         .flatMap { sheet, _base -> planDatasetVcfs(sheet) }

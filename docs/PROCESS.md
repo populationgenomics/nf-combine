@@ -1,7 +1,7 @@
 # How the nf-combine workflow runs
 
-A run takes a set of Metamist cohorts and produces three things: one combined Hail VDS, a genome-wide VQSR-filtered
-sites-only VCF, and one VCF for each dataset that has samples in those cohorts. Each step checks whether its output
+A run takes a set of Metamist cohorts and produces two things: one combined Hail VDS, and one VQSR-filtered VCF for
+each dataset that has samples in those cohorts. Each step checks whether its output
 already exists and skips the work if it does. A failed or repeated run therefore picks up where the last one stopped.
 Output locations are generated based on the combined hash of all sequencing groups, so workflow resumption is reliable. 
 
@@ -45,6 +45,9 @@ With `--force` there is no base, a supplied `--base_vds` is used next, and the d
 - If the VDS is already complete, the combine is skipped and the run goes straight to densifying.
 - Otherwise, the run goes on to combine.
 
+It also checks whether every dataset's VCF of the VDS (step 7) already exists. If they all do, the VDS isn't
+densified, and nothing after the combine runs for it except the seqr VCFs (step 8).
+
 **Why it checks the `_SUCCESS` marker rather than the folder:** a half-written VDS still has its folder. Hail writes
 the marker last, so the marker means the VDS is complete.
 
@@ -75,7 +78,13 @@ Metamist.
 
 ## 5. Densify (`DENSIFY`, on a second temporary cluster)
 
-Every VDS is densified, whether this run made it or it already existed.
+Every VDS is densified, whether this run made it or it already existed, unless every dataset's VCF of it already
+exists.
+
+*Why the check is here, not at VQSR:* densifying and VQSR exist only to make the dataset VCFs, so once those exist
+there's nothing left for either to do. VQSR's results aren't published, so it can't tell on its own whether it's
+done: if any dataset VCF is missing, it runs again (or is reused from the cache with `-resume`). Checking here also
+avoids starting a cluster to re-densify a VDS whose densified outputs have been removed from the temp bucket.
 
 **What is a VDS?** A compact format that stores reference blocks and variant calls separately. Most tools can't read
 it directly.
@@ -108,7 +117,7 @@ their work.
 
 ## 6. VQSR filtering (`VQSR` subworkflow)
 
-This step only runs when `--vqsr` is set and the VQSR output for this VDS doesn't exist yet. VQSR is GATK's
+This step runs on every densified VDS when `--vqsr` is set. VQSR is GATK's
 machine-learning filter. It learns what real variants look like from trusted reference sets, then scores and filters
 every site.
 
@@ -127,17 +136,15 @@ every site.
    shard.
    *Why per shard works:* the indel model covers the whole genome, and GATK looks up results by genomic position.
    Applying it to one shard at a time gives the same result as applying it to the whole file.
-6. **Join the chunks (`CONCAT_VCFS`).** The filtered chunks are joined in genomic order into `<name>_vqsr.vcf.gz`, the
-   sites-only VQSR result.
-7. **Copy the results onto the genotypes (`ANNOTATE_FRAGMENTS`).** Each whole shard receives the FILTER values and
+6. **Copy the results onto the genotypes (`ANNOTATE_FRAGMENTS`).** Each whole shard receives the FILTER values and
    VQSR annotations from the matching sites-only shard.
    *Why it's more involved than it sounds:*
    - The whole shards are grouped into chunks of their own size (`annotate_fragments_per_job`). Each shard's filtered
      file is regrouped to match.
    - Shards are paired by their position in the export, not by name, because the names don't match (Hail incorporates a hash value into each fragment name). The shard counts
      must be equal, and each pair's record counts are compared before annotating.
-   - Each whole shard is annotated from its own small filtered file rather than the genome-wide one. Without a region,
-     bcftools would read the genome-wide file from the start of the chromosome every time.
+   - Each whole shard is annotated from its own small filtered file rather than one joined across shards. Without a
+     region, bcftools would read a joined file from the start of the chromosome every time.
    - Every annotated shard gets the same header, and that header is also saved as a separate small file. The next
      step uses it to build each dataset's header without downloading any shards.
 

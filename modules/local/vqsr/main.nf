@@ -2,8 +2,8 @@
  * GATK VQSR on the sites-only VCFs, ported from cpg-flow-seqr-loader's TrainVqsr*, GatherTrainedVqsrSnpTranches,
  * RunSnpVqsrOnFragments and RunIndelVqsr stages. The models are trained on the composed VCF (COMPOSE_SITES_ONLY).
  * The SNP tranches are trained shard by shard, on the header-per-shard export, with many shards per task. SNP and
- * indel VQSR are then applied to each shard, and the shards concatenated into the genome-wide VQSR VCF. Each shard's
- * VQSR VCF is also copied onto the whole fragment from the same partition (ANNOTATE_FRAGMENTS).
+ * indel VQSR are then applied to each shard, and each shard's VQSR VCF is copied onto the whole fragment from the same
+ * partition (ANNOTATE_FRAGMENTS).
  *
  * vqsr holds the settings (planned in main.nf): filter levels, and the resources, as {name: VCF path}. The
  * resource files and their indexes are staged as refs, and are found by their basenames.
@@ -178,9 +178,8 @@ process GATHER_VQSR_SNP_TRANCHES {
 }
 
 /*
- * One chunk of shards: SNP then indel VQSR applied to each, then the chunk gathered into one VCF. The shards arrive
- * in genomic order, so the chunk's VCF is sorted. Each shard's VQSR VCF is kept too: ANNOTATE_FRAGMENTS copies it
- * onto the whole fragment from the same partition. The indel model is genome-wide, and ApplyVQSR looks its
+ * One chunk of shards: SNP then indel VQSR applied to each. Each shard's VQSR VCF is kept: ANNOTATE_FRAGMENTS copies
+ * it onto the whole fragment from the same partition. The indel model is genome-wide, and ApplyVQSR looks its
  * recalibrations up by locus, so applying it shard by shard gives the same result as applying it to the joined VCF.
  */
 process APPLY_VQSR {
@@ -192,12 +191,10 @@ process APPLY_VQSR {
     val vqsr
 
     output:
-    tuple val(key), val(chunk), path("chunk_${chunk}.vcf.gz"), path("chunk_${chunk}.vcf.gz.tbi"), emit: chunk
     tuple val(key), val(chunk), path('*.vqsr.vcf.gz'), path('*.vqsr.vcf.gz.tbi'), emit: shards
 
     script:
     """
-    gather=()
     for vcf in ${vcfs}; do
         ${linkShard()}
         gatk --java-options "${javaOptions(task)}" ApplyVQSR \\
@@ -219,42 +216,14 @@ process APPLY_VQSR {
             --use-allele-specific-annotations \\
             -mode INDEL
         rm \$name.snp.vcf.gz \$name.snp.vcf.gz.tbi
-        gather+=(-I \$name.vqsr.vcf.gz)
     done
-
-    gatk --java-options "${javaOptions(task)}" GatherVcfs "\${gather[@]}" -O chunk_${chunk}.vcf.gz
-    gatk IndexFeatureFile -I chunk_${chunk}.vcf.gz
     """
 
     stub:
     """
-    touch chunk_${chunk}.vcf.gz chunk_${chunk}.vcf.gz.tbi
     for vcf in ${vcfs}; do
         touch \${vcf%.bgz}.vqsr.vcf.gz \${vcf%.bgz}.vqsr.vcf.gz.tbi
     done
-    """
-}
-
-// the chunks' VCFs, sorted and non-overlapping, in order -> the genome-wide VQSR VCF. Published to plan.vqsr_dir
-// (conf/base.config)
-process CONCAT_VCFS {
-    tag "${plan.name}"
-    container params.cpg_container
-
-    input:
-    tuple val(plan), path(vcfs), path(tbis)
-
-    output:
-    tuple val(plan), path(plan.vqsr_name), path("${plan.vqsr_name}.tbi")
-
-    script:
-    """
-    bcftools concat --threads ${task.cpus} ${vcfs} -Oz -o ${plan.vqsr_name} -W=tbi
-    """
-
-    stub:
-    """
-    touch ${plan.vqsr_name} ${plan.vqsr_name}.tbi
     """
 }
 
@@ -263,9 +232,9 @@ process CONCAT_VCFS {
  * from the same partition, and is written as a VCF with its header. The chunk's header is also written alone, as
  * text, so the dataset VCFs' headers (DATASET_VCFS) can be made without staging any fragment.
  *
- * Each fragment is annotated against its own shard's VQSR VCF, not the genome-wide one: without a region, bcftools
- * reads the annotation file from the start of the fragment's chromosome, so every fragment would read most of a
- * chromosome. Fragments and VQSR VCFs come in partition order, and are paired by position: their names aren't
+ * Each fragment is annotated against its own shard's VQSR VCF, not one joined across shards: without a region,
+ * bcftools reads the annotation file from the start of the fragment's chromosome, so every fragment would read most
+ * of a chromosome. Fragments and VQSR VCFs come in partition order, and are paired by position: their names aren't
  * expected to match. Each pair must hold the same records: their record counts are compared before annotating.
  *
  * Every fragment, and the header, gets VQSR's header lines from -h, whether or not it has records: so every

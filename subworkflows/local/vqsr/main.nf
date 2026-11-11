@@ -1,6 +1,6 @@
 /*
- * Densified exports -> one VQSR-filtered sites-only VCF per VDS, and the whole (genotypes-inclusive) fragments with
- * VQSR's filters and annotations, each a VCF with its header, for DATASET_VCFS to split by dataset.
+ * Densified exports -> the whole (genotypes-inclusive) fragments with VQSR's filters and annotations, each a VCF with
+ * its header, for DATASET_VCFS to split by dataset.
  *
  * densified: [plan from planVqsr() in main.nf, header-per-shard manifest, separate-header manifest,
  *            whole fragments' (header-per-shard) manifest]
@@ -20,7 +20,6 @@ include {
     TRAIN_VQSR_SNP_TRANCHES ;
     GATHER_VQSR_SNP_TRANCHES ;
     APPLY_VQSR ;
-    CONCAT_VCFS ;
     ANNOTATE_FRAGMENTS
 } from '../../../modules/local/vqsr'
 
@@ -60,9 +59,6 @@ workflow VQSR {
     main:
     def snp_refs = stagedResources(vqsr, ['hapmap', 'omni', 'one_thousand_genomes', 'dbsnp'])
     def indel_refs = stagedResources(vqsr, ['mills', 'axiom_poly', 'dbsnp'])
-
-    // [VDS name, plan], to put the plan back on outputs keyed by name
-    def plans = densified.map { plan, _sites_only, _separate_header, _whole -> [plan.name, plan] }
 
     COMPOSE_SITES_ONLY(densified.map { plan, _sites_only, separate_header, _whole -> [plan, separate_header] })
     def composed = COMPOSE_SITES_ONLY.out.map { plan -> [plan, file(plan.composed)] }
@@ -105,17 +101,6 @@ workflow VQSR {
         .combine(GATHER_VQSR_SNP_TRANCHES.out, by: 0)
         .combine(indel_model, by: 0)
     APPLY_VQSR(to_apply, vqsr)
-
-    // the chunks back in genomic order, for a plain concat
-    def vqsr_chunks = APPLY_VQSR.out.chunk
-        .map { key, index, vcf, tbi -> [key, [index, vcf, tbi]] }
-        .groupTuple()
-        .join(plans)
-        .map { _key, parts, plan ->
-            def ordered = parts.toSorted { part -> part[0] }
-            [plan, ordered.collect { part -> part[1] }, ordered.collect { part -> part[2] }]
-        }
-    CONCAT_VCFS(vqsr_chunks)
 
     // each VQSR VCF alone, by its sites-only shard's position in the export: [VDS name, position, VCF, index].
     // APPLY_VQSR names each after its input shard, but a glob output's order is its own, so they're matched by name
@@ -160,8 +145,6 @@ workflow VQSR {
         .map { key, _index, text -> [key, text] }
 
     emit:
-    // [plan, VQSR sites-only VCF, its index]
-    vcf = CONCAT_VCFS.out
     // [VDS name, chunk index, its annotated whole fragments, each a VCF with the same header]: chunks in no order
     fragments = ANNOTATE_FRAGMENTS.out.fragments
     // [VDS name, the annotated whole fragments' header, as text]

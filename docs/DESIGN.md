@@ -54,15 +54,17 @@ written to its own bucket, so the service account needs write access to those bu
                                                               ├─ any check fails ─▶ fail, no cluster    │
                                                               └─ COMBINE (Dataproc, then register) ─────┤
                                                                                                         ▼
-                                  run records ◀─ DENSIFY (Dataproc) ◀─ planDensify ◀─ VDS, new or existing
+                                  run records ◀─ DENSIFY (Dataproc) ◀─ planDensify ◀─ VDS, new or existing,
+                                                                                      unless all dataset VCFs exist
                                                      │
                                                      ▼
                          dense MT, sites-only VCF shards (two layouts), whole-VCF fragments
                                                      │ --vqsr
                                                      ▼
-                         VQSR ─▶ VQSR sites-only VCF, annotated whole fragments ─ DATASET_VCFS ─▶ one VCF per dataset                                                                                                        │ --seqr_vcf
-                                                                                                        ▼
-                                                                         REHEADER_VCF ─▶ participant-named VCF per listed dataset
+                         VQSR ─▶ annotated whole fragments ─ DATASET_VCFS ─▶ one VCF per dataset
+                                                                                     │ --seqr_vcf
+                                                                                     ▼
+                                                              REHEADER_VCF ─▶ participant-named VCF per listed dataset
 ```
 
 Everything that can fail cheaply fails before any cluster starts.
@@ -103,6 +105,9 @@ Everything that can fail cheaply fails before any cluster starts.
   | no     | combine                                                     |
   | yes    | no combine, logged, no cluster; the VDS is still densified  |
 
+- Whether every dataset VCF of the VDS (`<dataset bucket>/joint_vcf/<sequencing_type>/<name>.vcf.bgz`) exists. If
+  they all do, the VDS isn't densified (logged), and so there's no VQSR either.
+
 ### 3. Combine (`COMBINE`, `bin/submit_hail.py`, `bin/combiner.py`)
 
 A submitter task creates the Dataproc cluster (named `combine-<ar-guid>-<random>`) and runs the Hail script
@@ -141,7 +146,8 @@ path, so there's no asynchronous publish to wait for. It creates a `vds` analysi
 
 ### 5. Densify (`DENSIFY`, `bin/submit_hail.py`, `bin/densify.py`)
 
-Every VDS is densified, whether this run combined it or it already existed. This is a port of
+Every VDS is densified, whether this run combined it or it already existed, unless every dataset VCF of it already
+exists (`planCombine`). This is a port of
 `cpg-flow-seqr-loader`'s `CreateDenseMtFromVdsWithHail` stage. The task has the same shape as `COMBINE`. A submitter
 task creates a cluster (named `densify-<ar-guid>-<random>`), with the same `dataproc_*` settings as the combine,
 runs the Hail script on it, and tears it down. The task gets one retry. The helpers the script imports
@@ -176,8 +182,9 @@ as the nth sites-only shard. Hail gives each export's shards different names, so
 
 ### 6. VQSR and dataset VCFs
 
-With `vqsr` on, and unless the VDS's VQSR VCF already exists, the `VQSR` subworkflow filters the sites-only
-exports and copies the results onto the whole fragments. The `DATASET_VCFS` subworkflow then writes one VCF per
+With `vqsr` on, the `VQSR` subworkflow filters every densified VDS's sites-only exports and copies the results onto
+the whole fragments. It publishes nothing: its results go to `DATASET_VCFS` as task outputs, so it has no done check
+of its own, and is gated by densifying's. The `DATASET_VCFS` subworkflow then writes one VCF per
 dataset in the sheet, to `<dataset bucket>/joint_vcf/<sequencing_type>/<name>.vcf.bgz`, skipping any that already exist.
 Each VCF it makes is registered in the dataset's own Metamist project as a `dataset_vcf` analysis, linked to the
 dataset's SGs (`REGISTER_DATASET_VCF`), unless `register` is off.
