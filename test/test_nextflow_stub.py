@@ -1,6 +1,7 @@
 """Offline `nextflow run` checks of main.nf's wiring: the pre-flight checks, where the VDS is written, base VDS
-choice, the no-op for an already-combined SG set, registration, densifying, the run records and the seqr VCFs.
-Placeholder files stand in for gVCFs. Most runs are stubs; two real runs swap in fake executables to check the
+choice, the no-op for an already-combined SG set, registration, densifying, the run records, and the dataset and seqr
+VCFs made from an existing VQSR VCF.
+Placeholder files stand in for gVCFs. Most runs are stubs; three real runs swap in fake executables to check the
 commands as rendered. The tests are skipped when nextflow isn't on PATH."""
 
 import csv
@@ -351,6 +352,93 @@ def test_a_vds_whose_dataset_vcfs_all_exist_is_not_densified(run, tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "it isn't densified" in result.stdout + result.stderr
     assert not task_names(tasks, 'DENSIFY')
+
+
+def vqsr_vcf(out: Path) -> Path:
+    """Where the VQSR VCF of the run's VDS is kept: <output_root>/tmp for local runs, named for the VDS."""
+    name = vds_name(SGS, [])
+    return out / 'tmp' / 'nf-combine' / 'vqsr' / name / f'{name}.vcf.bgz'
+
+
+def test_a_vds_whose_vqsr_vcf_exists_is_subset_not_densified(run, tmp_path):
+    out = tmp_path / 'results'
+    touch(vds_path(out) / 'variant_data' / '_SUCCESS')
+    touch(vqsr_vcf(out))
+    # no --seqr_vcf: REHEADER_VCF sizes its disk from the dataset VCF, which a stub doesn't write
+    result, out, tasks = run('--vqsr', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "isn't densified, and the dataset VCFs are subset from it" in result.stdout + result.stderr
+    assert not task_names(tasks, 'DENSIFY')
+    assert len(task_names(tasks, 'SUBSET_DATASET_VCF')) == 1
+    subset = task_output(tmp_path, tasks, 'SUBSET_DATASET_VCF')
+    assert f'would subset {vqsr_vcf(out)} to 3 SGs, to {dataset_vcf(out)}' in subset
+
+
+def test_without_vqsr_an_existing_vqsr_vcf_is_not_subset(run, tmp_path):
+    out = tmp_path / 'results'
+    touch(vds_path(out) / 'variant_data' / '_SUCCESS')
+    touch(vqsr_vcf(out))
+    result, _out, tasks = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not task_names(tasks, 'DENSIFY')
+    assert not task_names(tasks, 'SUBSET_DATASET_VCF')
+
+
+def test_an_existing_dataset_vcf_is_not_subset_again(run, tmp_path):
+    out = tmp_path / 'results'
+    touch(vds_path(out) / 'variant_data' / '_SUCCESS')
+    touch(vqsr_vcf(out))
+    touch(dataset_vcf(out))
+    result, _out, tasks = run('--vqsr', 'true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'the ds VCF is already done' in result.stdout + result.stderr
+    assert not task_names(tasks, 'SUBSET_DATASET_VCF')
+
+
+def test_real_subset_commands_as_rendered(run, sheet, tmp_path):
+    """
+    A real (not stub) run whose VDS and VQSR VCF already exist, so it only subsets (nothing is densified), with the
+    tools replaced by fakes on PATH. gcloud and bcftools log each call; gcloud's copies make an empty destination.
+    """
+    out = tmp_path / 'results'
+    touch(vds_path(out) / 'variant_data' / '_SUCCESS')
+    touch(vqsr_vcf(out))
+    log = 'echo "$(basename "$0") $*" >> calls.log'
+    fakes = {
+        'build_samplesheet.py': f'cp {sheet} {vds_name(SGS, [])}.tsv; touch base_vds.txt',
+        # the dataset's directory doesn't exist yet
+        'gcloud': f'{log}\nif [[ $2 == cp ]]; then mkdir -p "$(dirname "$4")"; touch "$4"; fi',
+        'bcftools': f"{log}\nif [[ $1 == query ]]; then printf '%s\\n' CPG1 CPG2 CPG3; fi",
+    }
+    config = install_fakes(tmp_path, fakes)
+
+    result, out, tasks = run('-c', str(config), '--vqsr', 'true', stub=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not task_names(tasks, 'DENSIFY')
+
+    final = str(dataset_vcf(out))
+    calls = [line.split() for line in task_output(tmp_path, tasks, 'SUBSET_DATASET_VCF', 'calls.log').splitlines()]
+    assert [call[:3] for call in calls] == [
+        ['gcloud', 'storage', 'cp'],
+        ['bcftools', 'view', '--no-version'],
+        ['bcftools', 'query', '-l'],
+        ['bcftools', 'index', '--tbi'],
+        ['gcloud', 'storage', 'cp'],
+        ['gcloud', 'storage', 'cp'],
+    ]
+    assert calls[0][3] == str(vqsr_vcf(out))
+    view = calls[1]
+    assert after(view, '--samples-file') == 'samples.txt'
+    assert after(view, '--min-ac') == '1'
+    assert '--no-update' in view
+    # the index first, so if the VCF exists it's indexed
+    assert calls[-2][4] == f'{final}.tbi'
+    assert calls[-1][4] == final
+    # nothing but the small text files is left in the work directory
+    workdir = next(t for t in tasks if t['name'].startswith('SUBSET_DATASET_VCF'))['hash']
+    workdir = next((tmp_path / 'work').glob(f'{workdir}*'))
+    assert not list(workdir.glob('*.vcf.bgz*'))
+    assert task_output(tmp_path, tasks, 'SUBSET_DATASET_VCF', 'samples.txt') == 'CPG1\nCPG2\nCPG3\n'
 
 
 def test_seqr_vcf_is_made_from_an_existing_dataset_vcf(run, tmp_path):
