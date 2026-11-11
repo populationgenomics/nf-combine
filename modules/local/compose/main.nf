@@ -55,8 +55,7 @@ process COMPOSE_SITES_ONLY {
  * joined object is then copied there. A copy writes its output in one step, so if final_output exists it's complete,
  * and is reused.
  *
- * Every fragment is composed, empty or not: an empty object adds nothing. plan.dataset is the dataset the compute is
- * billed to (conf/base.config).
+ * Every fragment is composed, empty or not: an empty object adds nothing. Used to join the VQSR VCF (VQSR).
  */
 process COMPOSE_FRAGMENTS {
     tag "${plan.name}"

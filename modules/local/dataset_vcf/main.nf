@@ -1,99 +1,61 @@
 /*
- * One dataset's share of the VQSR-annotated whole VCF: its SGs, and only the sites where at least one of them has a
- * non-reference allele. The header and the fragments are subset in separate tasks, so a dataset's header is made
- * without staging any fragment, and both are written ready to compose (COMPOSE_FRAGMENTS): the header, then the
- * headless fragments, then the BGZF EOF block.
+ * The VQSR VCF -> one dataset's VCF: its SGs, and only the sites where at least one of them has a non-reference
+ * allele, indexed, at plan.final_output. plan comes from planDatasetVcfs() in main.nf: its sgs are the dataset's SGs,
+ * the samples kept, sorted. bcftools writes them in the order listed, so that's the VCF's sample order.
  *
- * plan comes from planDatasetVcfs() in main.nf: its sgs are the dataset's SGs, the samples kept.
+ * The VQSR VCF is copied into a scratch directory on the task's disk (not the work directory, which would keep it),
+ * and everything there is deleted when the task ends, whether or not it succeeds. The index is uploaded first, then
+ * the VCF: an upload writes its object in one step, so if the VCF exists, it's complete and indexed
+ * (planDatasetVcfs()). A dataset VCF written before they were indexed also counts as done.
+ *
+ * --min-ac 1 drops the rows where none of the samples has a non-reference allele, counted from their genotypes. The
+ * export is split (densify.py), one alt per row, so a row is kept or dropped whole: no allele needs trimming.
+ * --no-update keeps every INFO field, AC and AN included, as computed across the whole callset.
  */
-
-// bcftools view's options for a dataset's subset, shared by its header and its fragments, so they match. --min-ac 1
-// drops the rows where none of the samples has a non-reference allele, counted from their genotypes. The export is
-// split (densify.py), one alt per row, so a row is kept or dropped whole: no allele needs trimming. --no-update
-// keeps every INFO field, AC and AN included, as computed across the whole callset
-def subsetArgs() {
-    '--no-version --no-update --samples-file samples.txt --min-ac 1'
-}
-
-// bash: the dataset's SGs, one per line. The order is the VCF's sample order, so the same everywhere. printf is a
-// builtin, so the line length isn't limited
-def writeSamples(plan) {
-    "printf '%s\\n' ${plan.sgs.join(' ')} > samples.txt"
-}
-
-/*
- * bash: strip_eof FILE cuts the BGZF EOF block off the end of FILE, after checking it's there. bcftools ends every
- * bgzipped file with one, and htsjdk (GATK) reads one in the middle of a file as the end of the file, so it's cut
- * from everything that's composed but the final eof.bgz
- */
-def stripEof() {
-    '''
-    strip_eof() {
-        if [[ $(tail -c 28 "$1" | od -An -tx1 | tr -d ' \\n') != 1f8b08040000000000ff0600424302001b0003000000000000000000 ]]; then
-            echo "$1 doesn't end in a BGZF EOF block" >&2
-            exit 1
-        fi
-        truncate -s $(( $(wc -c < "$1") - 28 )) "$1"
-    }
-    '''
-}
-
-// the annotated fragments' header (text) -> the dataset's header, bgzipped without an EOF block, and the EOF block
-process SUBSET_HEADER {
+process SUBSET_DATASET_VCF {
     tag "${plan.name}"
     container params.cpg_container
+    // the VQSR VCF, the dataset's share of it (no bigger), and 20 GB to spare
+    disk { 1.GB * ((2 * file(vcf).size()).intdiv(1000000000) + 21) }
 
     input:
-    tuple val(plan), path(header)
+    // vcf: the VQSR VCF, as a gs:// URI. Not staged: it's copied into scratch, then deleted
+    tuple val(plan), val(vcf)
 
     output:
-    tuple val(plan.name), path('header.vcf.bgz'), path('eof.bgz')
+    tuple val(plan), val(plan.final_output)
 
     script:
     """
-    ${stripEof()}
-    ${writeSamples(plan)}
+    # something in the Batch runtime sets CLOUDSDK_PYTHON=/usr/bin/python3, absent in this image; let gcloud find its own
+    unset CLOUDSDK_PYTHON
 
-    bcftools view ${subsetArgs()} -h ${header} -Oz -o header.vcf.bgz
-    tail -c 28 header.vcf.bgz > eof.bgz
-    strip_eof header.vcf.bgz
+    scratch=\$(mktemp -d)
+    trap 'rm -rf "\$scratch"' EXIT
+
+    # printf is a builtin, so the line length isn't limited
+    printf '%s\\n' ${plan.sgs.join(' ')} > samples.txt
+
+    gcloud storage cp ${vcf} \$scratch/input.vcf.bgz
+    bcftools view --no-version --no-update --samples-file samples.txt --min-ac 1 \\
+        --threads ${task.cpus} -Oz -o \$scratch/dataset.vcf.bgz \$scratch/input.vcf.bgz
+    rm \$scratch/input.vcf.bgz
+
+    # exactly the dataset's SGs, in order
+    bcftools query -l \$scratch/dataset.vcf.bgz > subset_samples.txt
+    if ! diff subset_samples.txt samples.txt; then
+        echo "${plan.name}: the subset VCF's samples aren't the dataset's SGs" >&2
+        exit 1
+    fi
+
+    bcftools index --tbi --threads ${task.cpus} \$scratch/dataset.vcf.bgz
+    gcloud storage cp \$scratch/dataset.vcf.bgz.tbi ${plan.final_output}.tbi
+    gcloud storage cp \$scratch/dataset.vcf.bgz ${plan.final_output}
     """
 
     stub:
     """
-    touch header.vcf.bgz eof.bgz
-    """
-}
-
-// one chunk of annotated fragments -> the dataset's subset of each, headless, without an EOF block. A fragment with
-// no sites left is empty
-process SUBSET_FRAGMENTS {
-    tag "${plan.name} chunk ${chunk}"
-    container params.cpg_container
-
-    input:
-    tuple val(plan), val(chunk), path(fragments)
-
-    output:
-    tuple val(plan.name), val(chunk), path('*.subset.vcf.bgz')
-
-    script:
-    """
-    ${stripEof()}
-    ${writeSamples(plan)}
-
-    for vcf in ${fragments}; do
-        name=\${vcf%.annotated.vcf.bgz}
-        bcftools view ${subsetArgs()} -H --threads ${task.cpus} -Oz -o \$name.subset.vcf.bgz \$vcf
-        strip_eof \$name.subset.vcf.bgz
-    done
-    """
-
-    stub:
-    """
-    for vcf in ${fragments}; do
-        touch \${vcf%.annotated.vcf.bgz}.subset.vcf.bgz
-    done
+    echo "would subset ${vcf} to ${plan.sgs.size()} SGs, to ${plan.final_output}"
     """
 }
 

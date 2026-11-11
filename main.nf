@@ -1,19 +1,18 @@
 /*
  * Combining for one dataset and sequencing type: Metamist cohorts -> gVCFs -> one Hail VDS,
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
- * Unless every dataset's VCF of it already exists, the VDS is then densified, on a second cluster, into sites-only
- * VCF shards, and those are filtered with VQSR.
- * VQSR's results are copied onto the whole (genotypes-inclusive) VCF, which is then split into one VCF per dataset.
- * Each dataset's VCF is registered in its Metamist project. Datasets in seqr_vcf also get a copy of theirs with the
- * samples named by participant, not SG.
+ * Unless its VQSR VCF, or every dataset's VCF of it, already exists, the VDS is then densified, on a second cluster,
+ * into sites-only VCF shards, and those are filtered with VQSR.
+ * VQSR's results are copied onto the whole (genotypes-inclusive) VCF, which is joined into one VCF of every sample:
+ * the VQSR VCF, kept in the temp bucket. Each dataset's VCF is subset from it, and registered in the dataset's
+ * Metamist project. Datasets in seqr_vcf also get a copy of theirs with the samples named by participant, not SG.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
 include { COMBINE } from './modules/local/combine'
 include { DENSIFY } from './modules/local/densify'
 include { VQSR } from './subworkflows/local/vqsr'
-include { DATASET_VCFS } from './subworkflows/local/dataset_vcfs'
-include { REHEADER_VCF ; REGISTER_DATASET_VCF } from './modules/local/dataset_vcf'
+include { SUBSET_DATASET_VCF ; REHEADER_VCF ; REGISTER_DATASET_VCF } from './modules/local/dataset_vcf'
 
 /*
  * Types only: the defaults are in nextflow.config, which conf/base.config reads before this script is parsed.
@@ -101,6 +100,17 @@ def tempBucket() {
 
 def tempRoot() {
     "${tempBucket()}/nf-combine"
+}
+
+/*
+ * The VQSR VCF of a VDS: every sample, with VQSR's filters and annotations, and what each dataset's VCF is subset
+ * from. In the temp bucket (<output_root>/tmp for local runs: Nextflow checks it exists, and can't read the bucket
+ * offline), named for the VDS, so a later run finds it. Once the bucket's lifecycle rules remove it, a missing dataset
+ * VCF means densifying again.
+ */
+def vqsrVcf(name) {
+    def root = params.output_root ? "${uriOf(file(params.output_root))}/tmp/nf-combine" : tempRoot()
+    "${root}/vqsr/${name}.vcf.bgz"
 }
 
 // per-run records: the sample sheet, the cluster and job, and what the combine added and removed
@@ -193,8 +203,8 @@ def checkSeqrParticipants(sheet) {
 
 /*
  * A cheap check on the VDS existence, all other checks are done at SampleSheet construction.
- * Also checks whether every dataset's VCF of the VDS exists: those are all densifying it is for, so if they do, it
- * isn't densified.
+ * Also checks whether the VDS's VQSR VCF, and every dataset's VCF of it, exist: densifying and VQSR only make the
+ * VQSR VCF, and it's only for the dataset VCFs, so if either is done, the VDS isn't densified.
  */
 def planCombine(sheet, discovered_base, refresh, force) {
     // the sheet is named for the VDS it makes: <hash of SG and refresh IDs>_<SG count>.tsv
@@ -214,6 +224,9 @@ def planCombine(sheet, discovered_base, refresh, force) {
         force: force,
         n_sgs: sheet.readLines().count { line -> line.trim() } - 1,
         action: exists ? 'done' : 'combine',
+        vqsr_vcf: vqsrVcf(sheet.baseName),
+        // a compose or copy writes its output in one step, so if the VQSR VCF exists it's complete
+        vqsr_vcf_done: file(vqsrVcf(sheet.baseName)).exists(),
         dataset_vcfs_done: planDatasetVcfs(sheet).every { _vds, plan -> plan.done },
         // keyed by the VDS name, so a retry finds the plan and report of its earlier attempt
         temp_dir: tempRoot(),
@@ -247,8 +260,8 @@ def planDensify(combine_plan) {
 
 /*
  * Where VQSR on a densified VDS composes the sites-only VCF its models are trained on: in the temp bucket, named for
- * the VDS. It must share a bucket with the separate-header shards it's composed from. VQSR publishes nothing else:
- * its results go on to the dataset VCFs as task outputs.
+ * the VDS. It must share a bucket with the separate-header shards it's composed from. VQSR's product is the VQSR VCF
+ * (vqsrVcf()), joined from the annotated whole fragments.
  */
 def planVqsr(densify_plan) {
     def name = densify_plan.name
@@ -256,13 +269,15 @@ def planVqsr(densify_plan) {
     return densify_plan + [
         composed: "${dir}/${name}_sites_only.vcf.bgz",
         compose_temp: "${dir}/compose_intermediates",
+        vqsr_vcf: vqsrVcf(name),
     ]
 }
 
 /*
- * One VCF per dataset with SGs in the sheet: the VQSR-annotated whole VCF, cut down to the dataset's SGs and the
- * sites where they have a non-reference allele. Written to the dataset's bucket (<output_root>/<dataset> for local
- * runs), named for the VDS. If it exists, an earlier run finished it. Returns [[VDS name, plan]].
+ * One VCF per dataset with SGs in the sheet: the VQSR VCF, cut down to the dataset's SGs and the sites where they
+ * have a non-reference allele. Written to the dataset's bucket (<output_root>/<dataset> for local runs), named for
+ * the VDS. Its index is uploaded first, and an upload writes its object in one step, so if the VCF exists, an earlier
+ * run finished it. Returns [[VDS name, plan]].
  * metamist_project is the dataset's own project, where its VCF is registered.
  *
  * A seqr_vcf dataset's plan also has seqr_output, beside the VCF: the same VCF, with each SG's sample renamed to
@@ -354,18 +369,21 @@ workflow {
 
     COMBINE(planned.combine, hail_lib, cluster, registration)
 
-    // a VDS is densified, whether made by this run or already there, unless every dataset's VCF of it exists. VQSR
-    // has no check of its own: its results are task outputs, so any missing dataset VCF needs it run (cached under
-    // -resume)
+    // a VDS is densified, whether made by this run or already there, unless its VQSR VCF, or every dataset's VCF of
+    // it, exists
     def vds_plans = planned.done.map { _sheet, plan -> plan }
         .mix(COMBINE.out.plan)
         .branch { plan ->
-            done: plan.dataset_vcfs_done
+            dataset_vcfs_done: plan.dataset_vcfs_done
+            vqsr_vcf_done: plan.vqsr_vcf_done
             todo: true
         }
 
-    vds_plans.done.subscribe { plan ->
+    vds_plans.dataset_vcfs_done.subscribe { plan ->
         log.info("Every dataset VCF of ${plan.output} already exists: it isn't densified")
+    }
+    vds_plans.vqsr_vcf_done.subscribe { plan ->
+        log.info("${plan.vqsr_vcf} already exists: ${plan.output} isn't densified, and the dataset VCFs are subset from it")
     }
 
     DENSIFY(vds_plans.todo.map { plan -> planDensify(plan) }, hail_lib, cluster)
@@ -390,6 +408,12 @@ workflow {
 
     VQSR(densified, vqsr)
 
+    // [VDS name, its VQSR VCF]: made by this run, or already there. Without --vqsr, no dataset VCFs are made
+    def vqsr_vcfs = vds_plans.vqsr_vcf_done
+        .filter { _plan -> params.vqsr }
+        .map { plan -> [plan.name, plan.vqsr_vcf] }
+        .mix(VQSR.out.vcf)
+
     def dataset_plans = built
         .flatMap { sheet, _base -> planDatasetVcfs(sheet) }
         .branch { _vds, plan ->
@@ -401,15 +425,16 @@ workflow {
         log.info("${plan.final_output} already exists: the ${plan.dataset} VCF is already done")
     }
 
-    DATASET_VCFS(VQSR.out.fragments, VQSR.out.header, dataset_plans.todo)
+    // each missing dataset VCF, from its VDS's VQSR VCF
+    SUBSET_DATASET_VCF(dataset_plans.todo.combine(vqsr_vcfs, by: 0).map { _vds, plan, vcf -> [plan, vcf] })
 
     // only the VCFs this run made: an existing one was registered by the run that made it
-    REGISTER_DATASET_VCF(DATASET_VCFS.out.vcf.filter { _plan, _vcf -> params.register }, registration)
+    REGISTER_DATASET_VCF(SUBSET_DATASET_VCF.out.filter { _plan, _vcf -> params.register }, registration)
 
     // seqr VCFs: from each seqr_vcf dataset's VCF, made by this run or already there
     def seqr_plans = dataset_plans.done
         .map { _vds, plan -> [plan, plan.final_output] }
-        .mix(DATASET_VCFS.out.vcf)
+        .mix(SUBSET_DATASET_VCF.out)
         .filter { plan, _vcf -> plan.seqr_output }
         .branch { plan, _vcf ->
             done: plan.seqr_done
