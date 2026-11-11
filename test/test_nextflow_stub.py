@@ -121,6 +121,10 @@ def after(words: list[str], flag: str) -> str:
     return words[words.index(flag) + 1]
 
 
+# a fake submitter for runs that shouldn't reach Dataproc: if one does, it fails offline rather than calling GCS
+NO_DATAPROC = 'echo "submit_hail.py ran: this run should not submit to Dataproc" >&2; exit 1'
+
+
 def install_fakes(tmp_path: Path, fakes: dict[str, str]) -> Path:
     """
     Write fake executables that record their arguments to `<name>.args` then run their body, and a config putting
@@ -399,6 +403,7 @@ def test_real_subset_commands_as_rendered(run, sheet, tmp_path):
     """
     A real (not stub) run whose VDS and VQSR VCF already exist, so it only subsets (nothing is densified), with the
     tools replaced by fakes on PATH. gcloud and bcftools log each call; gcloud's copies make an empty destination.
+    The submitter fails if called.
     """
     out = tmp_path / 'results'
     touch(vds_path(out) / 'variant_data' / '_SUCCESS')
@@ -406,6 +411,7 @@ def test_real_subset_commands_as_rendered(run, sheet, tmp_path):
     log = 'echo "$(basename "$0") $*" >> calls.log'
     fakes = {
         'build_samplesheet.py': f'cp {sheet} {vds_name(SGS, [])}.tsv; touch base_vds.txt',
+        'submit_hail.py': NO_DATAPROC,
         # the dataset's directory doesn't exist yet
         'gcloud': f'{log}\nif [[ $2 == cp ]]; then mkdir -p "$(dirname "$4")"; touch "$4"; fi',
         'bcftools': f"{log}\nif [[ $1 == query ]]; then printf '%s\\n' CPG1 CPG2 CPG3; fi",
@@ -496,6 +502,7 @@ def test_real_reheader_commands_as_rendered(run, sheet, tmp_path):
     """
     A real (not stub) run whose VDS and dataset VCF already exist, so it only reheaders (nothing is densified), with
     the tools replaced by fakes on PATH. gcloud and bcftools log each call; gcloud's copies make an empty destination.
+    The submitter fails if called.
     """
     out = tmp_path / 'results'
     touch(vds_path(out) / 'variant_data' / '_SUCCESS')
@@ -503,6 +510,7 @@ def test_real_reheader_commands_as_rendered(run, sheet, tmp_path):
     log = 'echo "$(basename "$0") $*" >> calls.log'
     fakes = {
         'build_samplesheet.py': f'cp {sheet} {vds_name(SGS, [])}.tsv; touch base_vds.txt',
+        'submit_hail.py': NO_DATAPROC,
         'gcloud': f'{log}\nif [[ $2 == cp ]]; then touch "$4"; fi',
         'bcftools': f"{log}\nif [[ $1 == query ]]; then printf '%s\\n' CPG1-EXT CPG2-EXT CPG3-EXT; fi",
     }
