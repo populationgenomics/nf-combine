@@ -1,6 +1,6 @@
 /*
- * Densified exports -> one VQSR-filtered sites-only VCF per VDS, and the whole (genotypes-inclusive) fragments with
- * VQSR's filters and annotations, each a VCF with its header, for DATASET_VCFS to split by dataset.
+ * Densified exports -> the VQSR VCF: the whole (genotypes-inclusive) VCF, every sample, with VQSR's filters and
+ * annotations, at plan.vqsr_vcf. The dataset VCFs are subset from it.
  *
  * densified: [plan from planVqsr() in main.nf, header-per-shard manifest, separate-header manifest,
  *            whole fragments' (header-per-shard) manifest]
@@ -9,20 +9,28 @@
  *
  * The models are trained on the whole callset, joined by COMPOSE_SITES_ONLY. The SNP tranches are trained, and both
  * modes applied, on chunks of fragments_per_job header-per-shard shards. The whole fragments are chunked separately,
- * by annotate_fragments_per_job, and annotated from the matching shards' VQSR VCFs, regrouped to match. Everything
- * is keyed by the VDS name, as a run can't tell how many VDSs it will densify until it's planned them.
+ * by annotate_fragments_per_job, and annotated from the matching shards' VQSR VCFs, regrouped to match. The annotated
+ * fragments are written headless, ready to compose: the header, the fragments in genomic order, and the BGZF EOF
+ * block are then joined in GCS (COMPOSE_FRAGMENTS), beside the header, as every fragment is a task output, so all are
+ * in the work directory's bucket. The joined VCF is then copied to plan.vqsr_vcf. Everything is keyed by the VDS
+ * name, as a run can't tell how many VDSs it will densify until it's planned them.
  */
 
-include { COMPOSE_SITES_ONLY } from '../../../modules/local/compose'
+include { COMPOSE_SITES_ONLY ; COMPOSE_FRAGMENTS } from '../../../modules/local/compose'
 include {
     TRAIN_VQSR_INDEL_MODEL ;
     TRAIN_VQSR_SNP_MODEL ;
     TRAIN_VQSR_SNP_TRANCHES ;
     GATHER_VQSR_SNP_TRANCHES ;
     APPLY_VQSR ;
-    CONCAT_VCFS ;
     ANNOTATE_FRAGMENTS
 } from '../../../modules/local/vqsr'
+
+// gs://bucket/path for cloud paths (Path.toString() drops the scheme), a plain path locally. No trailing slash: a
+// cloud directory's toUriString() ends in one
+def uriOf(path) {
+    (path.scheme == 'file' ? path.toString() : path.toUriString()).replaceAll('/+$', '')
+}
 
 // a resource VCF and its index: .tbi for bgzipped, .idx (Tribble) for plain text
 def withIndex(path) {
@@ -60,9 +68,6 @@ workflow VQSR {
     main:
     def snp_refs = stagedResources(vqsr, ['hapmap', 'omni', 'one_thousand_genomes', 'dbsnp'])
     def indel_refs = stagedResources(vqsr, ['mills', 'axiom_poly', 'dbsnp'])
-
-    // [VDS name, plan], to put the plan back on outputs keyed by name
-    def plans = densified.map { plan, _sites_only, _separate_header, _whole -> [plan.name, plan] }
 
     COMPOSE_SITES_ONLY(densified.map { plan, _sites_only, separate_header, _whole -> [plan, separate_header] })
     def composed = COMPOSE_SITES_ONLY.out.map { plan -> [plan, file(plan.composed)] }
@@ -106,17 +111,6 @@ workflow VQSR {
         .combine(indel_model, by: 0)
     APPLY_VQSR(to_apply, vqsr)
 
-    // the chunks back in genomic order, for a plain concat
-    def vqsr_chunks = APPLY_VQSR.out.chunk
-        .map { key, index, vcf, tbi -> [key, [index, vcf, tbi]] }
-        .groupTuple()
-        .join(plans)
-        .map { _key, parts, plan ->
-            def ordered = parts.toSorted { part -> part[0] }
-            [plan, ordered.collect { part -> part[1] }, ordered.collect { part -> part[2] }]
-        }
-    CONCAT_VCFS(vqsr_chunks)
-
     // each VQSR VCF alone, by its sites-only shard's position in the export: [VDS name, position, VCF, index].
     // APPLY_VQSR names each after its input shard, but a glob output's order is its own, so they're matched by name
     def vqsr_shards = chunks
@@ -154,16 +148,26 @@ workflow VQSR {
     // each chunk of whole fragments meets the VQSR VCFs of the same partitions, both in partition order
     ANNOTATE_FRAGMENTS(whole_chunks.join(vqsr_annotate_chunks, by: [0, 1]))
 
-    // every chunk writes the same header: chunk 0's is used
+    // every chunk writes the same header: chunk 0's is used, with its EOF block
     def headers = ANNOTATE_FRAGMENTS.out.header
-        .filter { _key, index, _header -> index == 0 }
-        .map { key, _index, text -> [key, text] }
+        .filter { _key, index, _header, _eof -> index == 0 }
+        .map { key, _index, header, eof -> [key, header, eof] }
+
+    // the fragments in genomic order: chunks by index, and within one, by partition name (part-NNNNN, zero-padded).
+    // A chunk of one fragment emits a lone path, hence the flatten. Then the header first and the EOF block last
+    def to_compose = ANNOTATE_FRAGMENTS.out.fragments
+        .map { key, index, vcfs -> [key, [index, [vcfs].flatten().toSorted { vcf -> vcf.name }]] }
+        .groupTuple()
+        .join(headers)
+        .join(densified.map { plan, _sites_only, _separate_header, _whole -> [plan.name, plan] })
+        .map { _key, parts, header, eof, plan ->
+            def ordered = parts.toSorted { part -> part[0] }.collectMany { part -> part[1] }
+            def joined = ([header] + ordered + [eof]).collect { vcf -> uriOf(vcf) }
+            [[name: plan.name, final_output: plan.vqsr_vcf], joined, "${uriOf(header.parent)}/compose"]
+        }
+    COMPOSE_FRAGMENTS(to_compose)
 
     emit:
-    // [plan, VQSR sites-only VCF, its index]
-    vcf = CONCAT_VCFS.out
-    // [VDS name, chunk index, its annotated whole fragments, each a VCF with the same header]: chunks in no order
-    fragments = ANNOTATE_FRAGMENTS.out.fragments
-    // [VDS name, the annotated whole fragments' header, as text]
-    header = headers
+    // [VDS name, its VQSR VCF]
+    vcf = COMPOSE_FRAGMENTS.out.map { plan, vcf -> [plan.name, vcf] }
 }

@@ -35,9 +35,24 @@ def test_query_matches_metamist_schema():
 def test_one_row_per_sg_sorted_with_its_own_dataset():
     cohorts = [cohort('COH1', [sg('CPG3'), sg('CPG1', project='other-test')]), cohort('COH2', [sg('CPG2')])]
     assert build_rows(cohorts, 'genome') == [
-        {'sg_id': 'CPG1', 'gvcf': 'gs://cpg-ds-main/gvcf/CPG1.g.vcf.gz', 'dataset': 'other'},
-        {'sg_id': 'CPG2', 'gvcf': 'gs://cpg-ds-main/gvcf/CPG2.g.vcf.gz', 'dataset': PROJECT},
-        {'sg_id': 'CPG3', 'gvcf': 'gs://cpg-ds-main/gvcf/CPG3.g.vcf.gz', 'dataset': PROJECT},
+        {
+            'sg_id': 'CPG1',
+            'gvcf': 'gs://cpg-ds-main/gvcf/CPG1.g.vcf.gz',
+            'dataset': 'other',
+            'participant': 'CPG1-EXT',
+        },
+        {
+            'sg_id': 'CPG2',
+            'gvcf': 'gs://cpg-ds-main/gvcf/CPG2.g.vcf.gz',
+            'dataset': PROJECT,
+            'participant': 'CPG2-EXT',
+        },
+        {
+            'sg_id': 'CPG3',
+            'gvcf': 'gs://cpg-ds-main/gvcf/CPG3.g.vcf.gz',
+            'dataset': PROJECT,
+            'participant': 'CPG3-EXT',
+        },
     ]
 
 
@@ -84,9 +99,9 @@ def test_unusable_cohorts_are_reported_together():
     assert "missing: ['COH1'], inactive: ['COH2'], empty: ['COH3']" in str(error.value)
 
 
-def test_analysis_path_falls_back_to_the_outputs_block():
-    assert analysis_path({'output': None, 'outputs': {'path': 'gs://b/x.vds'}}) == 'gs://b/x.vds'
-    assert analysis_path({'output': None, 'outputs': None}) is None
+def test_analysis_path_reads_the_outputs_block():
+    assert analysis_path({'outputs': {'path': 'gs://b/x.vds'}}) == 'gs://b/x.vds'
+    assert analysis_path({'outputs': None}) is None
 
 
 def test_base_is_the_newest_vds_of_the_sequencing_type():

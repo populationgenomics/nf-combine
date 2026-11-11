@@ -1,7 +1,7 @@
 # How the nf-combine workflow runs
 
-A run takes a set of Metamist cohorts and produces three things: one combined Hail VDS, a genome-wide VQSR-filtered
-sites-only VCF, and one VCF for each dataset that has samples in those cohorts. Each step checks whether its output
+A run takes a set of Metamist cohorts and produces two things: one combined Hail VDS, and one VQSR-filtered VCF for
+each dataset that has samples in those cohorts. Each step checks whether its output
 already exists and skips the work if it does. A failed or repeated run therefore picks up where the last one stopped.
 Output locations are generated based on the combined hash of all sequencing groups, so workflow resumption is reliable. 
 
@@ -23,7 +23,7 @@ The run checks its settings before doing any work:
 ## 2. Build the sample sheet (`BUILD_SAMPLESHEET`)
 
 One Metamist query fetches the cohorts, their sequencing groups (SGs) and each SG's gVCF. The result is a table with
-one row per SG: its ID, its gVCF path and the dataset it belongs to.
+one row per SG: its ID, its gVCF path, the dataset it belongs to and its participant's primary external ID.
 
 - Missing, inactive or empty cohorts stop the run.
 - An SG that appears in several cohorts is kept once.
@@ -44,6 +44,10 @@ With `--force` there is no base, a supplied `--base_vds` is used next, and the d
 
 - If the VDS is already complete, the combine is skipped and the run goes straight to densifying.
 - Otherwise, the run goes on to combine.
+
+It also checks whether the VDS's VQSR VCF (step 6) and every dataset's VCF of the VDS (step 7) already exist. If
+the dataset VCFs all do, the VDS isn't densified, and nothing after the combine runs for it except the seqr VCFs
+(step 8). If the VQSR VCF does, the VDS isn't densified either, and the missing dataset VCFs are cut from it.
 
 **Why it checks the `_SUCCESS` marker rather than the folder:** a half-written VDS still has its folder. Hail writes
 the marker last, so the marker means the VDS is complete.
@@ -75,7 +79,12 @@ Metamist.
 
 ## 5. Densify (`DENSIFY`, on a second temporary cluster)
 
-Every VDS is densified, whether this run made it or it already existed.
+Every VDS is densified, whether this run made it or it already existed, unless its VQSR VCF, or every dataset's VCF
+of it, already exists.
+
+*Why the check is here, not at VQSR:* densifying and VQSR exist only to make the VQSR VCF, and it exists only to make
+the dataset VCFs. Once either exists there's nothing left for densifying or VQSR to do. Checking here also avoids
+starting a cluster to re-densify a VDS whose densified outputs have been removed from the temp bucket.
 
 **What is a VDS?** A compact format that stores reference blocks and variant calls separately. Most tools can't read
 it directly.
@@ -108,9 +117,15 @@ their work.
 
 ## 6. VQSR filtering (`VQSR` subworkflow)
 
-This step only runs when `--vqsr` is set and the VQSR output for this VDS doesn't exist yet. VQSR is GATK's
+This step runs on every densified VDS when `--vqsr` is set. VQSR is GATK's
 machine-learning filter. It learns what real variants look like from trusted reference sets, then scores and filters
-every site.
+every site. Its result is the **VQSR VCF**: one genome-wide VCF of every sample in the run, with VQSR's filters and
+annotations, at `<temp bucket>/nf-combine/vqsr/<name>.vcf.bgz` (`<output_root>/tmp/nf-combine/...` for local
+runs).
+
+*Why it's kept, and why in the temp bucket:* it's the point a run resumes from. A later run that finds it skips
+densifying and VQSR, and only cuts the missing dataset VCFs from it. It's large, so it's left to the temp bucket's
+lifecycle rules. Once they remove it, a missing dataset VCF means densifying again.
 
 1. **Join the sites-only shards (`COMPOSE_SITES_ONLY`).** The separate-header shards are joined into one genome-wide
    file using Google Cloud Storage's compose operation, so nothing is downloaded.
@@ -127,37 +142,63 @@ every site.
    shard.
    *Why per shard works:* the indel model covers the whole genome, and GATK looks up results by genomic position.
    Applying it to one shard at a time gives the same result as applying it to the whole file.
-6. **Join the chunks (`CONCAT_VCFS`).** The filtered chunks are joined in genomic order into `<name>_vqsr.vcf.gz`, the
-   sites-only VQSR result.
-7. **Copy the results onto the genotypes (`ANNOTATE_FRAGMENTS`).** Each whole shard receives the FILTER values and
+6. **Copy the results onto the genotypes (`ANNOTATE_FRAGMENTS`).** Each whole shard receives the FILTER values and
    VQSR annotations from the matching sites-only shard.
    *Why it's more involved than it sounds:*
    - The whole shards are grouped into chunks of their own size (`annotate_fragments_per_job`). Each shard's filtered
      file is regrouped to match.
    - Shards are paired by their position in the export, not by name, because the names don't match (Hail incorporates a hash value into each fragment name). The shard counts
      must be equal, and each pair's record counts are compared before annotating.
-   - Each whole shard is annotated from its own small filtered file rather than the genome-wide one. Without a region,
-     bcftools would read the genome-wide file from the start of the chromosome every time.
-   - Every annotated shard gets the same header, and that header is also saved as a separate small file. The next
-     step uses it to build each dataset's header without downloading any shards.
-
-## 7. One VCF per dataset (`DATASET_VCFS` subworkflow)
-
-A plan is made for each dataset in the sample sheet. It covers that dataset's SGs and the output path
-`<dataset bucket>/vcf/<seq type>/<name>.vcf.bgz`. Datasets whose VCF already exists are skipped.
-
-1. **Cut down the header (`SUBSET_HEADER`).** Each dataset's header is limited to its own samples.
-2. **Cut down the shards (`SUBSET_FRAGMENTS`).** As soon as a chunk of annotated shards is ready, it's cut down for
-   every dataset. Only that dataset's samples are kept, and only sites where at least one of them has a non-reference
-   allele.
-   *Why the counts aren't recalculated:* AC and AN are left as computed across the whole callset (bcftools'
-   `--no-update` option). Because each row holds a single alternate allele, a row is simply kept or dropped, and no
-   allele trimming is needed.
-3. **Join the dataset's VCF (`COMPOSE_FRAGMENTS`).** The header, the shards in genomic order and an end-of-file marker
-   are joined in cloud storage. The result is then copied to the dataset's own bucket.
+   - Each whole shard is annotated from its own small filtered file rather than one joined across shards. Without a
+     region, bcftools would read a joined file from the start of the chromosome every time.
+   - Each annotated shard is written without its header, ready to join. The header is written once, as its own small
+     file. An empty shard is an empty file.
+7. **Join the VQSR VCF (`COMPOSE_FRAGMENTS`).** The header, the annotated shards in genomic order and an end-of-file
+   marker are joined in cloud storage, so nothing is downloaded. The result is then copied to the VQSR VCF's path.
    *Why the end-of-file markers are removed:* bcftools ends every compressed file with an end-of-file marker. GATK and
    htsjdk stop reading when they reach one, even in the middle of a file. The marker is removed from every piece, then
    added once at the very end.
+
+## 7. One VCF per dataset (`SUBSET_DATASET_VCF`)
+
+A plan is made for each dataset in the sample sheet. It covers that dataset's SGs and the output path
+`<dataset bucket>/joint_vcf/<seq type>/<name>.vcf.bgz`. Datasets whose VCF already exists are skipped. Each missing
+one is cut from the VQSR VCF, whether this run made it or an earlier one did. Without `--vqsr`, no dataset VCFs are
+made.
+
+1. **Cut down the VQSR VCF (`SUBSET_DATASET_VCF`).** The task copies the VQSR VCF to a scratch directory on its own
+   disk, keeps only the dataset's samples and the sites where at least one of them has a non-reference allele, checks
+   the samples are exactly the dataset's, indexes the result, and uploads the index and then the VCF. The scratch
+   directory is deleted when the task ends, whether it succeeds or not.
+   *Why the counts aren't recalculated:* AC and AN are left as computed across the whole callset (bcftools'
+   `--no-update` option). Because each row holds a single alternate allele, a row is simply kept or dropped, and no
+   allele trimming is needed.
+   *Why the VCF goes last:* each upload appears in one step, so if the VCF exists, its index does too. A dataset VCF
+   from before they were indexed still counts as done.
+2. **Register the dataset's VCF (`REGISTER_DATASET_VCF`).** If registration is on, the VCF is recorded in the
+   dataset's own Metamist project as a `dataset_vcf` analysis, linked to every SG in it, with the sequencing type and
+   ar-guid as metadata. A failed registration is retried once.
+   *Why only VCFs this run made:* a VCF that already exists was registered by the run that made it, so registering it
+   again would duplicate the record.
+
+## 8. seqr VCFs (`REHEADER_VCF`)
+
+Only for the datasets listed in `seqr_vcf`. Each one's VCF is written a second time, beside the first, as
+`<dataset bucket>/joint_vcf/<seq type>/<name>_seqr.vcf.bgz`. It has the same rows, but each sample is named by its
+participant's primary external ID (the sample sheet's `participant` column) rather than its SG ID. It's built from
+the dataset's VCF whether this run made it or an earlier one did. Datasets whose seqr VCF index already exists are
+skipped.
+
+The task copies the dataset's VCF to a scratch directory on its own disk, renames the samples with
+`bcftools reheader`, checks that every sample was renamed, indexes the result, and uploads the VCF and then its index.
+The scratch directory is deleted when the task ends, whether it succeeds or not.
+
+*Why scratch, not the work directory:* anything in the work directory is kept, so a copy of every dataset VCF would
+pile up there. *Why the index goes last:* if it exists, the VCF upload before it finished.
+
+*Why it's checked before combining:* a seqr VCF needs every SG in the dataset to have a participant ID, and no two
+SGs to share one, or two samples would have the same name. The run checks this as soon as the sample sheet is built,
+before any cluster starts. A dataset listed in `seqr_vcf` with no SGs in the sheet only gets a warning.
 
 ---
 

@@ -87,13 +87,13 @@ def test_a_manifest_of_paths_composes_every_fragment_then_copies_to_the_final_ou
         '--manifest', str(manifest),
         '--output', 'gs://work/a/compose/out.vcf.bgz',
         '--temp_dir', 'gs://work/a/compose/intermediates',
-        '--final_output', 'gs://dataset/vcf/out.vcf.bgz',
+        '--final_output', 'gs://dataset/joint_vcf/out.vcf.bgz',
         '--script', str(script),
     ])  # fmt: skip
     commands = [line for line in script.read_text().splitlines() if line.startswith('gcloud')]
     assert commands == [
         f'gcloud storage objects compose {" ".join(paths)} gs://work/a/compose/out.vcf.bgz',
-        'gcloud storage cp gs://work/a/compose/out.vcf.bgz gs://dataset/vcf/out.vcf.bgz',
+        'gcloud storage cp gs://work/a/compose/out.vcf.bgz gs://dataset/joint_vcf/out.vcf.bgz',
     ]
 
 
