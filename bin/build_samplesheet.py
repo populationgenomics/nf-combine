@@ -34,7 +34,7 @@ from metamist.graphql import gql, query
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ['sg_id', 'gvcf', 'dataset']
+COLUMNS = ['sg_id', 'gvcf', 'dataset', 'participant']
 SEQUENCING_TYPES = {'genome', 'exome'}
 
 # one round trip: cohort status, each cohort's SGs with their gVCFs, and the project's VDSs
@@ -50,16 +50,18 @@ query BuildCombineSamplesheet($project: String!, $cohorts: [String!]!) {
                 project {
                     name
                 }
+                participant {
+                    externalIds
+                }
             }
             analyses(type: {eq: "gvcf"}, active: {eq: true}) {
                 id
-                output
                 outputs
             }
         }
     }
     project(name: $project) {
-        analyses(type: {eq: "combiner"}, active: {eq: true}) {
+        analyses(type: {eq: "vds"}, active: {eq: true}) {
             id
             outputs
             meta
@@ -80,7 +82,7 @@ def analysis_path(analysis: dict) -> str | None:
         analysis: An analysis entry from the GraphQL response.
 
     Returns:
-        The entry's outputs.path, else its output, else None.
+        The entry's outputs.path, else None.
     """
     if isinstance(analysis.get('outputs'), str) or analysis.get('outputs') is None:
         return None
@@ -152,7 +154,14 @@ def build_rows(cohorts: list[dict], sequencing_type: str) -> list[dict]:
             if len(gvcfs) != 1:
                 errors.append(f'{sg_id}: expected one active gVCF, found {len(gvcfs)}: {gvcfs}')
                 continue
-            rows.append({'sg_id': sg_id, 'gvcf': gvcfs[0], 'dataset': dataset_of(sg['sample']['project']['name'])})
+            rows.append(
+                {
+                    'sg_id': sg_id,
+                    'gvcf': gvcfs[0],
+                    'dataset': dataset_of(sg['sample']['project']['name']),
+                    'participant': sg['sample']['participant']['externalIds'][''],
+                }
+            )
     if errors:
         raise SamplesheetError('\n'.join(errors))
     if not rows:

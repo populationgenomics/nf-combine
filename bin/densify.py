@@ -4,7 +4,8 @@
 
 Ported from cpg-flow-seqr-loader's CreateDenseMtFromVdsWithHail stage (scripts/densify_VDS_to_MT.py):
 - the VDS is read on the densify intervals, densified, and filtered to variant sites, then checkpointed
-- GATK-style INFO fields are computed and multiallelics are split, giving the dense MT
+- GATK-style INFO fields are computed and multiallelics are split, each split row keeping only its own alt's
+  allele-specific INFO, giving the dense MT
 - the MT's rows are exported twice, as a directory of sites-only VCF shards:
   - header per shard: each shard is a valid VCF, so the shards can be processed on their own (VEP, VQSR)
   - separate header: the shards concatenate, after the header, into one VCF (e.g. for VQSR training)
@@ -28,6 +29,23 @@ logger = logging.getLogger(__name__)
 
 SHARD_MANIFEST = 'shard-manifest.txt'
 
+# INFO arrays from default_compute_info holding one value per alt allele of the unsplit site
+PER_ALT_INFO_FIELDS = [
+    'AS_QUALapprox',
+    'AS_VarDP',
+    'AS_ReadPosRankSum',
+    'AS_MQRankSum',
+    'AS_MQ',
+    'AS_QD',
+    'AS_FS',
+    'AS_SOR',
+    'AS_pab_max',
+    'AC',
+    'AC_raw',
+]
+# INFO arrays that describe the whole site, kept as they are on each split row
+SITE_ARRAY_INFO_FIELDS = ['SB']
+
 
 def get_arguments() -> argparse.Namespace:
     """Parses the command line, as built by the DENSIFY process.
@@ -42,6 +60,7 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument('--out', required=True, help='The dense MT to write')
     parser.add_argument('--sites_only', required=True, help='Directory of header-per-shard sites-only VCFs')
     parser.add_argument('--separate_header', required=True, help='Directory of separate-header sites-only VCFs')
+    parser.add_argument('--whole_fragments', required=True, help='Directory of header-per-shard full VCFs')
     return parser.parse_args()
 
 
@@ -83,7 +102,7 @@ def densify(vds_path: str, intervals_path: str, checkpoint_path: str) -> hl.Matr
 
 
 def annotate_and_split(mt: hl.MatrixTable) -> hl.MatrixTable:
-    """Adds GATK-style INFO fields to the dense MT, drops the gVCF INFO, and splits multiallelics.
+    """Adds GATK-style INFO fields to the dense MT, drops the gVCF INFO, and splits multiallelics by allele.
 
     Args:
         mt: The dense MT, from densify.
@@ -102,17 +121,48 @@ def annotate_and_split(mt: hl.MatrixTable) -> hl.MatrixTable:
     mt = mt.drop('gvcf_info')
 
     logger.info('Splitting multiallelics, in a sparse way')
-    return hl.experimental.sparse_split_multi(mt)
+    return select_split_allele(hl.experimental.sparse_split_multi(mt))
 
 
-def export_sites_only(sites: hl.Table, out_dir: str, parallel: str) -> None:
-    """Exports a sites-only VCF as a directory of shards, unless an earlier attempt finished it.
+def select_split_allele(mt: hl.MatrixTable) -> hl.MatrixTable:
+    """Cuts each split row's allele-specific INFO down to its own alt allele.
+
+    sparse_split_multi copies the unsplit site's INFO onto every split row unchanged, so each row carries the
+    values for all of the site's alts. GATK reads an allele-specific value by the alt's position in the record,
+    which is always the first in a biallelic row, so without this every split row gets the first alt's values.
+
+    Args:
+        mt: The split MT, with a_index, and INFO from default_compute_info after adjust_vcf_incompatible_types.
+
+    Returns:
+        The MT, with one value per allele-specific INFO field on each row.
+
+    Raises:
+        ValueError: If the INFO has an array field not known to be per-alt or site-level.
+    """
+    info = mt.info
+    arrays = [field for field, dtype in info.dtype.items() if isinstance(dtype, hl.tarray)]
+    unknown = sorted(set(arrays) - set(PER_ALT_INFO_FIELDS) - set(SITE_ARRAY_INFO_FIELDS))
+    if unknown:
+        raise ValueError(f'INFO arrays neither per-alt nor site-level, so not split by allele: {unknown}')
+
+    # a_index is the row's alt in the unsplit site's alleles, so its value is at a_index - 1 among the alts
+    selected = {field: info[field][mt.a_index - 1 : mt.a_index] for field in PER_ALT_INFO_FIELDS if field in info}
+    if 'AS_SB_TABLE' in info:
+        # a string by now, 'ref|alt1|alt2...' (adjust_vcf_incompatible_types): keep the ref and this alt
+        tables = info.AS_SB_TABLE.split(r'\|')
+        selected['AS_SB_TABLE'] = tables[0] + '|' + tables[mt.a_index]
+    return mt.annotate_rows(info=info.annotate(**selected))
+
+
+def export_vcf_shards(sites: hl.Table | hl.MatrixTable, out_dir: str, parallel: str) -> None:
+    """Exports a VCF as a directory of shards, unless an earlier attempt finished it.
 
     The shard manifest is written last, so a directory without one is a partial export, which is removed
     before exporting again.
 
     Args:
-        sites: The MT's rows.
+        sites: The HT/MT's rows.
         out_dir: The directory to write.
         parallel: Hail's export_vcf parallel mode, 'header_per_shard' or 'separate_header'.
     """
@@ -143,9 +193,14 @@ def main() -> None:
         logger.info(f'Writing the dense MT to {args.out}')
         annotate_and_split(mt).write(args.out, overwrite=True)
 
-    sites = hl.read_matrix_table(args.out).rows()
-    export_sites_only(sites, args.sites_only, parallel='header_per_shard')
-    export_sites_only(sites, args.separate_header, parallel='separate_header')
+    # read the whole MT in, and generate
+    whole_vcf = hl.read_matrix_table(args.out)
+    export_vcf_shards(whole_vcf, args.whole_fragments, parallel='header_per_shard')
+
+    # then write sites-only representations for VQSR training and application
+    sites = whole_vcf.rows()
+    export_vcf_shards(sites, args.sites_only, parallel='header_per_shard')
+    export_vcf_shards(sites, args.separate_header, parallel='separate_header')
 
 
 if __name__ == '__main__':

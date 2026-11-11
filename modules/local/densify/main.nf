@@ -17,7 +17,7 @@ process DENSIFY {
     val cluster
 
     output:
-    tuple val(plan), path('sites_only.manifest'), path('separate_header.manifest'), emit: shards
+    tuple val(plan), path('sites_only.manifest'), path('separate_header.manifest'), path('whole_fragments.manifest'), emit: shards
     path 'densify_output.json', emit: record
 
     script:
@@ -31,24 +31,28 @@ process DENSIFY {
         ${clusterArgs(cluster)} \\
         --script \$HAIL_SCRIPT \\
         --pyfiles ${hail_lib} \\
-        --complete ${plan.mt}/_SUCCESS ${plan.sites_only}/shard-manifest.txt ${plan.separate_header}/shard-manifest.txt \\
+        --complete ${plan.mt}/_SUCCESS ${plan.sites_only}/shard-manifest.txt ${plan.separate_header}/shard-manifest.txt ${plan.whole_fragments}/shard-manifest.txt \\
         --fetch ${plan.sites_only}/shard-manifest.txt sites_only.manifest \\
         --fetch ${plan.separate_header}/shard-manifest.txt separate_header.manifest \\
+        --fetch ${plan.whole_fragments}/shard-manifest.txt whole_fragments.manifest \\
         --output densify_output.json \\
-        --record vds=${plan.vds} mt=${plan.mt} sites_only=${plan.sites_only} separate_header=${plan.separate_header} \\
+        --record vds=${plan.vds} mt=${plan.mt} sites_only=${plan.sites_only} separate_header=${plan.separate_header} whole_fragments=${plan.whole_fragments} \\
         -- \\
         --vds ${plan.vds} \\
         --intervals ${cluster.densify_intervals} \\
         --checkpoint ${plan.checkpoint} \\
         --out ${plan.mt} \\
         --sites_only ${plan.sites_only} \\
-        --separate_header ${plan.separate_header}
+        --separate_header ${plan.separate_header} \\
+        --whole_fragments ${plan.whole_fragments}
     """
 
     stub:
     """
-    printf 'part-00000.bgz\\npart-00001.bgz\\n' > sites_only.manifest
-    printf 'header.bgz\\npart-00000.bgz\\npart-00001.bgz\\n' > separate_header.manifest
+    # Hail adds a per-export hash to the shard names, so the exports' names differ
+    printf 'part-00000-aaaa.bgz\\npart-00001-aaaa.bgz\\n' > sites_only.manifest
+    printf 'header.bgz\\npart-00000-bbbb.bgz\\npart-00001-bbbb.bgz\\n' > separate_header.manifest
+    printf 'part-00000-cccc.bgz\\npart-00001-cccc.bgz\\n' > whole_fragments.manifest
     printf '{"vds": "${plan.vds}", "mt": "${plan.mt}", "cluster": null}\\n' > densify_output.json
     """
 }
