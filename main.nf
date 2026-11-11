@@ -274,7 +274,7 @@ def planDatasetVcfs(sheet) {
     def by_dataset = sheet.splitCsv(header: true, sep: '\t').groupBy { row -> row.dataset }
     by_dataset.collect { dataset, rows ->
         def root = params.output_root ? "${uriOf(file(params.output_root))}/${dataset}" : bucketOf(dataset)
-        def output = "${root}/vcf/${params.sequencing_type}/${vds}.vcf.bgz"
+        def output = "${root}/joint_vcf/${params.sequencing_type}/${vds}.vcf.bgz"
         def plan = [
             name: "${vds}_${dataset}",
             dataset: dataset,
@@ -285,7 +285,7 @@ def planDatasetVcfs(sheet) {
             done: file(output).exists(),
         ]
         if (dataset in seqrDatasets()) {
-            def seqr_output = "${root}/vcf/${params.sequencing_type}/${vds}_seqr.vcf.bgz"
+            def seqr_output = "${root}/joint_vcf/${params.sequencing_type}/${vds}_seqr.vcf.bgz"
             plan += [
                 seqr_output: seqr_output,
                 participants: rows.collectEntries { row -> [row.sg_id, row.participant] },

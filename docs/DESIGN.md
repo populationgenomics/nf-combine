@@ -178,7 +178,7 @@ as the nth sites-only shard. Hail gives each export's shards different names, so
 
 With `vqsr` on, and unless the VDS's VQSR VCF already exists, the `VQSR` subworkflow filters the sites-only
 exports and copies the results onto the whole fragments. The `DATASET_VCFS` subworkflow then writes one VCF per
-dataset in the sheet, to `<dataset bucket>/vcf/<sequencing_type>/<name>.vcf.bgz`, skipping any that already exist.
+dataset in the sheet, to `<dataset bucket>/joint_vcf/<sequencing_type>/<name>.vcf.bgz`, skipping any that already exist.
 Each VCF it makes is registered in the dataset's own Metamist project as a `dataset_vcf` analysis, linked to the
 dataset's SGs (`REGISTER_DATASET_VCF`), unless `register` is off.
 For the datasets in `seqr_vcf`, `REHEADER_VCF` writes a copy beside it, `<name>_seqr.vcf.bgz`, with each sample

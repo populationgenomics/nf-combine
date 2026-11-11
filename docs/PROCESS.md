@@ -144,7 +144,7 @@ every site.
 ## 7. One VCF per dataset (`DATASET_VCFS` subworkflow)
 
 A plan is made for each dataset in the sample sheet. It covers that dataset's SGs and the output path
-`<dataset bucket>/vcf/<seq type>/<name>.vcf.bgz`. Datasets whose VCF already exists are skipped.
+`<dataset bucket>/joint_vcf/<seq type>/<name>.vcf.bgz`. Datasets whose VCF already exists are skipped.
 
 1. **Cut down the header (`SUBSET_HEADER`).** Each dataset's header is limited to its own samples.
 2. **Cut down the shards (`SUBSET_FRAGMENTS`).** As soon as a chunk of annotated shards is ready, it's cut down for
@@ -167,7 +167,7 @@ A plan is made for each dataset in the sample sheet. It covers that dataset's SG
 ## 8. seqr VCFs (`REHEADER_VCF`)
 
 Only for the datasets listed in `seqr_vcf`. Each one's VCF is written a second time, beside the first, as
-`<dataset bucket>/vcf/<seq type>/<name>_seqr.vcf.bgz`. It has the same rows, but each sample is named by its
+`<dataset bucket>/joint_vcf/<seq type>/<name>_seqr.vcf.bgz`. It has the same rows, but each sample is named by its
 participant's primary external ID (the sample sheet's `participant` column) rather than its SG ID. It's built from
 the dataset's VCF whether this run made it or an earlier one did. Datasets whose seqr VCF index already exists are
 skipped.
