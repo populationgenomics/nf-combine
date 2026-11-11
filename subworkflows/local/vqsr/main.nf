@@ -1,25 +1,36 @@
 /*
- * Densified sites-only exports -> one VQSR-filtered sites-only VCF per VDS, in the temp bucket.
+ * Densified exports -> the VQSR VCF: the whole (genotypes-inclusive) VCF, every sample, with VQSR's filters and
+ * annotations, at plan.vqsr_vcf. The dataset VCFs are subset from it.
  *
  * densified: [plan from planVqsr() in main.nf, header-per-shard manifest, separate-header manifest,
- *            genotypes-inclusive header-per-shard manifest]. The last isn't used here, only passed through to the emit
- * vqsr: settings from main.nf. fragments_per_job, the filter levels, and resources: {name: VCF path}
+ *            whole fragments' (header-per-shard) manifest]
+ * vqsr: settings from main.nf. fragments_per_job, annotate_fragments_per_job, the filter levels, and resources:
+ *       {name: VCF path}
  *
- * The models are trained on the whole callset, joined by COMPOSE_SITES_ONLY. The SNP tranches are trained and
- * applied on chunks of header-per-shard shards. Everything is keyed by the VDS name, as a run can't tell how many
- * VDSs it will densify until it's planned them.
+ * The models are trained on the whole callset, joined by COMPOSE_SITES_ONLY. The SNP tranches are trained, and both
+ * modes applied, on chunks of fragments_per_job header-per-shard shards. The whole fragments are chunked separately,
+ * by annotate_fragments_per_job, and annotated from the matching shards' VQSR VCFs, regrouped to match. The annotated
+ * fragments are written headless, ready to compose: the header, the fragments in genomic order, and the BGZF EOF
+ * block are then joined in GCS (COMPOSE_FRAGMENTS), beside the header, as every fragment is a task output, so all are
+ * in the work directory's bucket. The joined VCF is then copied to plan.vqsr_vcf. Everything is keyed by the VDS
+ * name, as a run can't tell how many VDSs it will densify until it's planned them.
  */
 
-include { COMPOSE_SITES_ONLY } from '../../../modules/local/compose'
+include { COMPOSE_SITES_ONLY ; COMPOSE_FRAGMENTS } from '../../../modules/local/compose'
 include {
     TRAIN_VQSR_INDEL_MODEL ;
     TRAIN_VQSR_SNP_MODEL ;
     TRAIN_VQSR_SNP_TRANCHES ;
     GATHER_VQSR_SNP_TRANCHES ;
-    APPLY_VQSR_SNP ;
-    CONCAT_VCFS ;
-    APPLY_VQSR_INDEL
+    APPLY_VQSR ;
+    ANNOTATE_FRAGMENTS
 } from '../../../modules/local/vqsr'
+
+// gs://bucket/path for cloud paths (Path.toString() drops the scheme), a plain path locally. No trailing slash: a
+// cloud directory's toUriString() ends in one
+def uriOf(path) {
+    (path.scheme == 'file' ? path.toString() : path.toUriString()).replaceAll('/+$', '')
+}
 
 // a resource VCF and its index: .tbi for bgzipped, .idx (Tribble) for plain text
 def withIndex(path) {
@@ -28,6 +39,25 @@ def withIndex(path) {
 
 def stagedResources(vqsr, names) {
     names.collectMany { name -> withIndex(vqsr.resources[name]) }
+}
+
+// the shard names in a vcf export's manifest, in genomic order
+def manifestNames(manifest) {
+    manifest.readLines().collect { line -> line.trim() }.findAll { line -> line }
+}
+
+// a process output's files as a list: a glob matching one file gives a lone path, which is itself iterable
+def asList(files) {
+    files instanceof java.nio.file.Path ? [files] : files as List
+}
+
+// a vcf export, in chunks: [[VDS name, chunk index, shard VCFs, their indexes]], in genomic order
+def chunked(key, dir, names, size) {
+    def batches = names.collate(size)
+    (0..<batches.size()).collect { index ->
+        def shards = batches[index].collect { name -> "${dir}/${name}" }
+        [key, index, shards.collect { shard -> file(shard) }, shards.collect { shard -> file("${shard}.tbi") }]
+    }
 }
 
 workflow VQSR {
@@ -39,21 +69,31 @@ workflow VQSR {
     def snp_refs = stagedResources(vqsr, ['hapmap', 'omni', 'one_thousand_genomes', 'dbsnp'])
     def indel_refs = stagedResources(vqsr, ['mills', 'axiom_poly', 'dbsnp'])
 
-    COMPOSE_SITES_ONLY(densified.map { plan, _sites_only, separate_header, _whole_fragments -> [plan, separate_header] })
+    COMPOSE_SITES_ONLY(densified.map { plan, _sites_only, separate_header, _whole -> [plan, separate_header] })
     def composed = COMPOSE_SITES_ONLY.out.map { plan -> [plan, file(plan.composed)] }
 
     TRAIN_VQSR_INDEL_MODEL(composed, indel_refs, vqsr)
     TRAIN_VQSR_SNP_MODEL(composed, snp_refs, vqsr)
 
-    // [VDS name, chunk index, shard VCFs, their indexes], the shards in manifest (genomic) order
-    def chunks = densified.flatMap { plan, sites_only, _separate_header, _whole_fragments ->
-        def names = sites_only.readLines().collect { line -> line.trim() }.findAll { line -> line }
-        def batches = names.collate(vqsr.fragments_per_job)
-        (0..<batches.size()).collect { index ->
-            def shards = batches[index].collect { name -> "${plan.sites_only}/${name}" }
-            [plan.name, index, shards.collect { shard -> file(shard) }, shards.collect { shard -> file("${shard}.tbi") }]
-        }
+    def chunks = densified.flatMap { plan, sites_only, _separate_header, _whole ->
+        chunked(plan.name, plan.sites_only, manifestNames(sites_only), vqsr.fragments_per_job)
     }
+
+    // the whole fragments, in chunks of their own size. Whole fragments and sites-only shards are both exported from
+    // the dense MT's partitions, and listed in partition order, so the nth whole fragment holds the same records as the
+    // nth sites-only shard. Their names aren't expected to match: they're paired by position alone, so only their
+    // counts are checked
+    def whole_chunks = densified.flatMap { plan, sites_only, _separate_header, whole ->
+        def names = manifestNames(whole)
+        def shard_count = manifestNames(sites_only).size()
+        if (names.size() != shard_count) {
+            error("${plan.name}: ${names.size()} whole fragments but ${shard_count} sites-only shards, so they can't be paired")
+        }
+        chunked(plan.name, plan.whole_fragments, names, vqsr.annotate_fragments_per_job)
+    }
+
+    // [VDS name, its number of sites-only shards], to size the regrouped VQSR VCFs' chunks
+    def shard_counts = densified.map { plan, sites_only, _separate_header, _whole -> [plan.name, manifestNames(sites_only).size()] }
 
     TRAIN_VQSR_SNP_TRANCHES(chunks.combine(TRAIN_VQSR_SNP_MODEL.out, by: 0), snp_refs, vqsr)
 
@@ -63,36 +103,71 @@ workflow VQSR {
         .map { key, tranches -> [key, tranches.flatten().toSorted { tranche -> tranche.name }] }
     GATHER_VQSR_SNP_TRANCHES(shard_tranches)
 
-    // each chunk meets its own shards' recalibrations, and the gathered tranches
+    // each chunk meets its own shards' SNP recalibrations, the gathered SNP tranches, and the indel model
+    def indel_model = TRAIN_VQSR_INDEL_MODEL.out.map { plan, recal, recal_idx, tranches -> [plan.name, recal, recal_idx, tranches] }
     def to_apply = chunks
         .join(TRAIN_VQSR_SNP_TRANCHES.out.recal, by: [0, 1])
         .combine(GATHER_VQSR_SNP_TRANCHES.out, by: 0)
-    APPLY_VQSR_SNP(to_apply, vqsr)
+        .combine(indel_model, by: 0)
+    APPLY_VQSR(to_apply, vqsr)
 
-    // the chunks back in genomic order, for a plain concat
-    def snp_chunks = APPLY_VQSR_SNP.out
-        .map { key, index, vcf, tbi -> [key, [index, vcf, tbi]] }
-        .groupTuple()
-        .map { key, parts ->
-            def ordered = parts.toSorted { part -> part[0] }
-            [key, ordered.collect { part -> part[1] }, ordered.collect { part -> part[2] }]
+    // each VQSR VCF alone, by its sites-only shard's position in the export: [VDS name, position, VCF, index].
+    // APPLY_VQSR names each after its input shard, but a glob output's order is its own, so they're matched by name
+    def vqsr_shards = chunks
+        .join(APPLY_VQSR.out.shards, by: [0, 1])
+        .flatMap { key, index, shards, _tbis, vcfs, tbis ->
+            def vcf_by_name = asList(vcfs).collectEntries { vcf -> [vcf.name, vcf] }
+            def tbi_by_name = asList(tbis).collectEntries { tbi -> [tbi.name, tbi] }
+            def names = shards.collect { shard -> "${shard.name.replaceFirst(/\.bgz$/, '')}.vqsr.vcf.gz".toString() }
+            def missing = names.findAll { name -> !vcf_by_name.containsKey(name) || !tbi_by_name.containsKey("${name}.tbi".toString()) }
+            if (missing) {
+                error("${key} chunk ${index}: APPLY_VQSR wrote no ${missing}")
+            }
+            (0..<names.size()).collect { offset ->
+                def name = names[offset]
+                [key, index * vqsr.fragments_per_job + offset, vcf_by_name[name], tbi_by_name["${name}.tbi".toString()]]
+            }
         }
-    CONCAT_VCFS(snp_chunks)
 
-    def to_indel = TRAIN_VQSR_INDEL_MODEL.out
-        .map { plan, recal, recal_idx, tranches -> [plan.name, plan, recal, recal_idx, tranches] }
-        .join(CONCAT_VCFS.out)
-        .map { _key, plan, recal, recal_idx, tranches, vcf, tbi -> [plan, vcf, tbi, recal, recal_idx, tranches] }
-    APPLY_VQSR_INDEL(to_indel, vqsr)
+    // the VQSR VCFs regrouped into the whole fragments' chunks, in position order: [VDS name, chunk index, VCFs,
+    // indexes]. Each group's size is known, so it's emitted once its last VCF is, not once every APPLY_VQSR task is
+    def annotate_size = vqsr.annotate_fragments_per_job
+    def vqsr_annotate_chunks = vqsr_shards
+        .combine(shard_counts, by: 0)
+        .map { key, position, vcf, tbi, total ->
+            def chunk = position.intdiv(annotate_size)
+            [groupKey([key, chunk], Math.min(annotate_size, total - chunk * annotate_size)), position, vcf, tbi]
+        }
+        .groupTuple()
+        .map { group, positions, vcfs, tbis ->
+            def target = group.getGroupTarget()
+            def order = (0..<positions.size()).toSorted { i -> positions[i] }
+            [target[0], target[1], order.collect { i -> vcfs[i] }, order.collect { i -> tbis[i] }]
+        }
 
-    // the genotypes-inclusive manifest rejoins its VDS's result; its directory is plan.whole_fragments
-    def whole_manifests = densified.map { plan, _sites_only, _separate_header, whole_fragments -> [plan.name, whole_fragments] }
-    def result = APPLY_VQSR_INDEL.out
-        .map { plan, vcf, tbi -> [plan.name, plan, vcf, tbi] }
-        .join(whole_manifests)
-        .map { _key, plan, vcf, tbi, whole_fragments -> [plan, vcf, tbi, whole_fragments] }
+    // each chunk of whole fragments meets the VQSR VCFs of the same partitions, both in partition order
+    ANNOTATE_FRAGMENTS(whole_chunks.join(vqsr_annotate_chunks, by: [0, 1]))
+
+    // every chunk writes the same header: chunk 0's is used, with its EOF block
+    def headers = ANNOTATE_FRAGMENTS.out.header
+        .filter { _key, index, _header, _eof -> index == 0 }
+        .map { key, _index, header, eof -> [key, header, eof] }
+
+    // the fragments in genomic order: chunks by index, and within one, by partition name (part-NNNNN, zero-padded).
+    // A chunk of one fragment emits a lone path, hence the flatten. Then the header first and the EOF block last
+    def to_compose = ANNOTATE_FRAGMENTS.out.fragments
+        .map { key, index, vcfs -> [key, [index, [vcfs].flatten().toSorted { vcf -> vcf.name }]] }
+        .groupTuple()
+        .join(headers)
+        .join(densified.map { plan, _sites_only, _separate_header, _whole -> [plan.name, plan] })
+        .map { _key, parts, header, eof, plan ->
+            def ordered = parts.toSorted { part -> part[0] }.collectMany { part -> part[1] }
+            def joined = ([header] + ordered + [eof]).collect { vcf -> uriOf(vcf) }
+            [[name: plan.name, final_output: plan.vqsr_vcf], joined, "${uriOf(header.parent)}/compose"]
+        }
+    COMPOSE_FRAGMENTS(to_compose)
 
     emit:
-    // [plan, VQSR sites-only VCF, its index, genotypes-inclusive header-per-shard manifest]
-    vcf = result
+    // [VDS name, its VQSR VCF]
+    vcf = COMPOSE_FRAGMENTS.out.map { plan, vcf -> [plan.name, vcf] }
 }

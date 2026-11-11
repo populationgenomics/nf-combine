@@ -49,9 +49,10 @@ process DENSIFY {
 
     stub:
     """
-    printf 'part-00000.bgz\\npart-00001.bgz\\n' > sites_only.manifest
-    printf 'header.bgz\\npart-00000.bgz\\npart-00001.bgz\\n' > separate_header.manifest
-    printf 'part-00000.bgz\\npart-00001.bgz\\n' > whole_fragments.manifest
+    # Hail adds a per-export hash to the shard names, so the exports' names differ
+    printf 'part-00000-aaaa.bgz\\npart-00001-aaaa.bgz\\n' > sites_only.manifest
+    printf 'header.bgz\\npart-00000-bbbb.bgz\\npart-00001-bbbb.bgz\\n' > separate_header.manifest
+    printf 'part-00000-cccc.bgz\\npart-00001-cccc.bgz\\n' > whole_fragments.manifest
     printf '{"vds": "${plan.vds}", "mt": "${plan.mt}", "cluster": null}\\n' > densify_output.json
     """
 }

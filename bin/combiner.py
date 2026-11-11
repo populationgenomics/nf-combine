@@ -6,6 +6,7 @@ With a base VDS (see DESIGN.md):
 - SGs in the base that aren't in the sample sheet are removed
 - refreshed SGs that are in the base are removed, then added back from their current gVCF
 - sample sheet SGs that the base lacks are added from their gVCFs
+- if no SG in the base would be kept, the base is dropped and the VDS is built from gVCFs alone
 
 Writes a JSON report of the base VDS used and the SGs added, removed and refreshed. The combiner plan and
 temp files are keyed by the VDS name, so a rerun with the same inputs resumes rather than starting again.
@@ -109,9 +110,15 @@ def main() -> None:
     requested = set(sg_to_gvcf)
     refresh = set(args.refresh)
 
+    base_vds = args.base_vds
     base_sgs: set[str] = set()
-    if args.base_vds:
-        base_sgs = set(hl.vds.read_vds(args.base_vds).variant_data.s.collect())
+    if base_vds:
+        base_sgs = set(hl.vds.read_vds(base_vds).variant_data.s.collect())
+        # a base keeping none of its SGs would leave an empty VDS, which Hail's combiner can't take as input
+        if not (base_sgs & requested) - refresh:
+            logger.warning(f'None of the {len(base_sgs)} SGs in {base_vds} are kept, so building without a base')
+            base_vds = None
+            base_sgs = set()
     refreshed = refresh & base_sgs
     if refresh - base_sgs:
         logger.warning(f'Refreshed SGs not in the base VDS are simply added: {sorted(refresh - base_sgs)}')
@@ -119,18 +126,18 @@ def main() -> None:
     added = sorted(requested - (base_sgs - removed))
 
     force = args.force
-    vds_paths = [args.base_vds] if args.base_vds else []
+    vds_paths = [base_vds] if base_vds else []
     if removed:
         # the base minus the removed SGs, kept so a retry can skip the removal and resume the combiner plan
         removal_vds = os.path.join(args.temp_dir, 'combiner_removal', f'{name}.vds')
         if not added:
             # nothing to combine, so the removal is the whole job
-            remove_sgs(args.base_vds, removed).write(args.out)
+            remove_sgs(base_vds, removed).write(args.out)
         elif vds_is_complete(removal_vds):
             logger.info(f'Reusing {removal_vds}, written by an earlier attempt')
             vds_paths = [removal_vds]
         else:
-            remove_sgs(args.base_vds, removed).write(removal_vds, overwrite=True)
+            remove_sgs(base_vds, removed).write(removal_vds, overwrite=True)
             vds_paths = [removal_vds]
             # the combiner's base has changed, so any saved plan is stale
             force = True
@@ -157,11 +164,11 @@ def main() -> None:
     elif not removed:
         # an explicit base holding exactly the requested SGs
         # shouldn't be possible, consider making this a failing case (equivalent SGs should give the same path)
-        hl.vds.read_vds(args.base_vds).write(args.out)
+        hl.vds.read_vds(base_vds).write(args.out)
 
     report = {
         'vds': args.out,
-        'base_vds': args.base_vds,
+        'base_vds': base_vds,
         'added': added,
         'removed': sorted(removed - refreshed),
         'refreshed': sorted(refreshed),
