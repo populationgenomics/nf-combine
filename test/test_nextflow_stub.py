@@ -1,7 +1,7 @@
 """Offline `nextflow run` checks of main.nf's wiring: the pre-flight checks, where the VDS is written, base VDS
-choice, the no-op for an already-combined SG set, registration, densifying and the run records. Placeholder files
-stand in for gVCFs. Most runs are stubs; one real run swaps in fake executables to check the commands as rendered.
-The tests are skipped when nextflow isn't on PATH."""
+choice, the no-op for an already-combined SG set, registration, densifying, the run records and the seqr VCFs.
+Placeholder files stand in for gVCFs. Most runs are stubs; two real runs swap in fake executables to check the
+commands as rendered. The tests are skipped when nextflow isn't on PATH."""
 
 import csv
 import json
@@ -32,7 +32,14 @@ def sheet(tmp_path) -> Path:
     rows = []
     for sg_id in SGS:
         touch(data / f'{sg_id}.g.vcf.gz.tbi')
-        rows.append({'sg_id': sg_id, 'gvcf': touch(data / f'{sg_id}.g.vcf.gz'), 'dataset': PROJECT, 'participant': f'{sg_id}-EXT'})
+        rows.append(
+            {
+                'sg_id': sg_id,
+                'gvcf': touch(data / f'{sg_id}.g.vcf.gz'),
+                'dataset': PROJECT,
+                'participant': f'{sg_id}-EXT',
+            }
+        )
     path = tmp_path / 'sheet.tsv'
     write_sheet(rows, str(path))
     return path
@@ -329,3 +336,103 @@ def test_intervals_must_be_in_gcs(run):
     assert result.returncode != 0
     assert "--genome_densify_intervals must be a gs:// path, got 'local.bed'" in result.stdout + result.stderr
     assert not tasks
+
+
+def dataset_vcf(out: Path, suffix: str = '') -> Path:
+    """Where a run writes the ds dataset's VCF (suffix '_seqr': its seqr VCF), named for the VDS."""
+    return out / PROJECT / 'vcf' / 'genome' / f'{vds_name(SGS, [])}{suffix}.vcf.bgz'
+
+
+def test_seqr_vcf_is_made_from_an_existing_dataset_vcf(run, tmp_path):
+    out = tmp_path / 'results'
+    touch(dataset_vcf(out))
+    result, out, tasks = run('--seqr_vcf', PROJECT)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'the ds VCF is already done' in result.stdout + result.stderr
+    assert len(task_names(tasks, 'REHEADER_VCF')) == 1
+    assert str(dataset_vcf(out, '_seqr')) in task_output(tmp_path, tasks, 'REHEADER_VCF')
+
+
+def test_datasets_not_in_seqr_vcf_get_no_seqr_vcf(run, tmp_path):
+    touch(dataset_vcf(tmp_path / 'results'))
+    result, _out, tasks = run('--seqr_vcf', 'other')
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '--seqr_vcf names other, which has no SGs in the sample sheet' in result.stdout + result.stderr
+    assert not task_names(tasks, 'REHEADER_VCF')
+
+
+def test_an_existing_seqr_vcf_is_not_remade(run, tmp_path):
+    out = tmp_path / 'results'
+    touch(dataset_vcf(out))
+    touch(Path(f'{dataset_vcf(out, "_seqr")}.tbi'))
+    result, _out, tasks = run('--seqr_vcf', PROJECT)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'the ds seqr VCF is already done' in result.stdout + result.stderr
+    assert not task_names(tasks, 'REHEADER_VCF')
+
+
+@pytest.mark.parametrize(
+    ('participants', 'message'),
+    [
+        (['P1', 'P1', 'P3'], 'ds: participant P1 has several SGs: [CPG1, CPG2]'),
+        (['P1', '', 'P3'], 'ds: no participant ID for [CPG2]'),
+    ],
+)
+def test_seqr_vcf_needs_one_participant_per_sg(run, sheet, participants, message):
+    rows = read_tsv(sheet)
+    for row, participant in zip(rows, participants, strict=True):
+        row['participant'] = participant
+    write_sheet(rows, str(sheet))
+
+    result, _out, tasks = run('--seqr_vcf', PROJECT)
+    assert result.returncode != 0
+    assert message in result.stdout + result.stderr
+    assert not task_names(tasks, 'COMBINE')
+
+    # only the seqr_vcf datasets need participants
+    result, _out, _tasks = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_real_reheader_commands_as_rendered(run, sheet, tmp_path):
+    """
+    A real (not stub) run whose VDS and dataset VCF already exist, so it only densifies and reheaders, with the
+    tools replaced by fakes on PATH. gcloud and bcftools log each call; gcloud's copies make an empty destination.
+    """
+    out = tmp_path / 'results'
+    touch(vds_path(out) / 'variant_data' / '_SUCCESS')
+    touch(dataset_vcf(out))
+    log = 'echo "$(basename "$0") $*" >> calls.log'
+    fakes = {
+        'build_samplesheet.py': f'cp {sheet} {vds_name(SGS, [])}.tsv; touch base_vds.txt',
+        'submit_hail.py': (
+            'echo {} > densify_output.json; touch sites_only.manifest separate_header.manifest whole_fragments.manifest'
+        ),
+        'gcloud': f'{log}\nif [[ $2 == cp ]]; then touch "$4"; fi',
+        'bcftools': f"{log}\nif [[ $1 == query ]]; then printf '%s\\n' CPG1-EXT CPG2-EXT CPG3-EXT; fi",
+    }
+    config = install_fakes(tmp_path, fakes)
+
+    result, out, tasks = run('-c', str(config), '--seqr_vcf', PROJECT, stub=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    seqr = str(dataset_vcf(out, '_seqr'))
+    calls = [line.split() for line in task_output(tmp_path, tasks, 'REHEADER_VCF', 'calls.log').splitlines()]
+    assert [call[:3] for call in calls] == [
+        ['gcloud', 'storage', 'cp'],
+        ['bcftools', 'reheader', '--samples'],
+        ['bcftools', 'query', '-l'],
+        ['bcftools', 'index', '--tbi'],
+        ['gcloud', 'storage', 'cp'],
+        ['gcloud', 'storage', 'cp'],
+    ]
+    assert calls[0][3] == str(dataset_vcf(out))
+    assert calls[-2][4] == seqr
+    assert calls[-1][4] == f'{seqr}.tbi'
+    # nothing but the small text files is left in the work directory
+    workdir = next(t for t in tasks if t['name'].startswith('REHEADER_VCF'))['hash']
+    workdir = next((tmp_path / 'work').glob(f'{workdir}*'))
+    assert not list(workdir.glob('*.vcf.bgz*'))
+    assert task_output(tmp_path, tasks, 'REHEADER_VCF', 'participants.txt') == (
+        'CPG1\tCPG1-EXT\nCPG2\tCPG2-EXT\nCPG3\tCPG3-EXT\n'
+    )

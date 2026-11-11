@@ -96,3 +96,61 @@ process SUBSET_FRAGMENTS {
     done
     """
 }
+
+/*
+ * A dataset's VCF -> the same VCF with each SG's sample renamed to its participant's primary external ID (from the
+ * sample sheet), indexed, at plan.seqr_output. Only for the datasets in params.seqr_vcf.
+ *
+ * The VCF is copied into a scratch directory on the task's disk (not the work directory, which would keep it), and
+ * everything there is deleted when the task ends, whether or not it succeeds. bcftools reheader only rewrites the
+ * header and copies the rest of the file block by block, but it writes a new file, so the disk holds two copies.
+ * The index is uploaded last: if it exists, the VCF is complete (planDatasetVcfs() in main.nf).
+ */
+process REHEADER_VCF {
+    tag "${plan.name}"
+    container params.bcftools_container
+    // the VCF twice (before and after reheadering), and 20 GB to spare
+    disk { 1.GB * ((2 * file(vcf).size()).intdiv(1000000000) + 21) }
+
+    input:
+    // vcf: the dataset's VCF, as a gs:// URI. Not staged: it's copied into scratch, then deleted
+    tuple val(plan), val(vcf)
+
+    output:
+    tuple val(plan), val(plan.seqr_output)
+
+    script:
+    // SG -> participant pairs, and the participants in the VCF's sample order (plan.sgs), to check the result
+    def pairs = plan.sgs.collect { sg -> "'${sg}' '${plan.participants[sg]}'" }.join(' ')
+    def expected = plan.sgs.collect { sg -> "'${plan.participants[sg]}'" }.join(' ')
+    """
+    # something in the Batch runtime sets CLOUDSDK_PYTHON=/usr/bin/python3, absent in this image; let gcloud find its own
+    unset CLOUDSDK_PYTHON
+
+    scratch=\$(mktemp -d)
+    trap 'rm -rf "\$scratch"' EXIT
+
+    printf '%s\\t%s\\n' ${pairs} > participants.txt
+    printf '%s\\n' ${expected} > expected_samples.txt
+
+    gcloud storage cp ${vcf} \$scratch/input.vcf.bgz
+    bcftools reheader --samples participants.txt --output \$scratch/seqr.vcf.bgz \$scratch/input.vcf.bgz
+    rm \$scratch/input.vcf.bgz
+
+    # every sample renamed, in the same order
+    bcftools query -l \$scratch/seqr.vcf.bgz > samples.txt
+    if ! diff samples.txt expected_samples.txt; then
+        echo "${plan.name}: the reheadered VCF's samples aren't the expected participants" >&2
+        exit 1
+    fi
+
+    bcftools index --tbi --threads ${task.cpus} \$scratch/seqr.vcf.bgz
+    gcloud storage cp \$scratch/seqr.vcf.bgz ${plan.seqr_output}
+    gcloud storage cp \$scratch/seqr.vcf.bgz.tbi ${plan.seqr_output}.tbi
+    """
+
+    stub:
+    """
+    echo "would reheader ${vcf} with participant IDs, to ${plan.seqr_output}"
+    """
+}

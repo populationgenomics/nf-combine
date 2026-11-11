@@ -3,6 +3,7 @@
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
  * The VDS is then densified, on a second cluster, into sites-only VCF shards, and those are filtered with VQSR.
  * VQSR's results are copied onto the whole (genotypes-inclusive) VCF, which is then split into one VCF per dataset.
+ * Datasets in seqr_vcf also get a copy of theirs with the samples named by participant, not SG.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
@@ -10,6 +11,7 @@ include { COMBINE } from './modules/local/combine'
 include { DENSIFY } from './modules/local/densify'
 include { VQSR } from './subworkflows/local/vqsr'
 include { DATASET_VCFS } from './subworkflows/local/dataset_vcfs'
+include { REHEADER_VCF } from './modules/local/dataset_vcf'
 
 /*
  * Types only: the defaults are in nextflow.config, which conf/base.config reads before this script is parsed.
@@ -28,6 +30,7 @@ params {
     refresh: String? // or a list, from a config file
     register: Boolean
     output_root: String?
+    seqr_vcf: String? // or a list, from a config file
 
     // only the run's sequencing type's are needed: validateParams() checks them
     exome_combiner_intervals: String?
@@ -128,6 +131,11 @@ def densifyIntervals() {
     params.sequencing_type == 'exome' ? params.exome_densify_intervals : params.genome_densify_intervals
 }
 
+// the datasets whose VCF is also written with participant IDs as sample names
+def seqrDatasets() {
+    params.seqr_vcf ? idList(params.seqr_vcf).unique() : []
+}
+
 // what the params block can't check: allowed values, and params that are needed together or not at all
 def validateParams() {
     if (!(params.sequencing_type in ['genome', 'exome'])) {
@@ -148,6 +156,33 @@ def validateParams() {
         if (!intervals.startsWith('gs://')) {
             error("${param} must be a gs:// path, got '${intervals}'")
         }
+    }
+}
+
+/*
+ * The sheet's participant IDs become the sample names of the seqr VCFs, so in each seqr_vcf dataset every SG needs
+ * one, and no two SGs can share one. Checked before anything is combined. A seqr_vcf dataset with no SGs in the
+ * sheet gets no VCF, so it's warned about.
+ */
+def checkSeqrParticipants(sheet) {
+    def by_dataset = sheet.splitCsv(header: true, sep: '\t').groupBy { row -> row.dataset }
+    seqrDatasets().findAll { dataset -> !by_dataset.containsKey(dataset) }.each { dataset ->
+        log.warn("--seqr_vcf names ${dataset}, which has no SGs in the sample sheet: it gets no VCF")
+    }
+    def errors = []
+    by_dataset.subMap(seqrDatasets()).each { dataset, rows ->
+        def missing = rows.findAll { row -> !row.participant }.collect { row -> row.sg_id }
+        if (missing) {
+            errors << "${dataset}: no participant ID for ${missing}"
+        }
+        rows.findAll { row -> row.participant }.groupBy { row -> row.participant }.each { participant, shared ->
+            if (shared.size() > 1) {
+                errors << "${dataset}: participant ${participant} has several SGs: ${shared.collect { row -> row.sg_id }}"
+            }
+        }
+    }
+    if (errors) {
+        error("Can't name the seqr VCF samples by participant:\n${errors.join('\n')}")
     }
 }
 
@@ -225,6 +260,9 @@ def planVqsr(densify_plan) {
  * One VCF per dataset with SGs in the sheet: the VQSR-annotated whole VCF, cut down to the dataset's SGs and the
  * sites where they have a non-reference allele. Written to the dataset's bucket (<output_root>/<dataset> for local
  * runs), named for the VDS. If it exists, an earlier run finished it. Returns [[VDS name, plan]].
+ *
+ * A seqr_vcf dataset's plan also has seqr_output, beside the VCF: the same VCF, with each SG's sample renamed to
+ * its participant ID (checkSeqrParticipants()). Its index is written last, so if that exists, the VCF is done.
  */
 def planDatasetVcfs(sheet) {
     def vds = sheet.baseName
@@ -240,6 +278,14 @@ def planDatasetVcfs(sheet) {
             final_output: output,
             done: file(output).exists(),
         ]
+        if (dataset in seqrDatasets()) {
+            def seqr_output = "${root}/vcf/${params.sequencing_type}/${vds}_seqr.vcf.bgz"
+            plan += [
+                seqr_output: seqr_output,
+                participants: rows.collectEntries { row -> [row.sg_id, row.participant] },
+                seqr_done: file("${seqr_output}.tbi").exists(),
+            ]
+        }
         [vds, plan]
     }
 }
@@ -256,6 +302,7 @@ workflow {
 
     def planned = built
         .map { sheet, base ->
+            checkSeqrParticipants(sheet)
             [sheet, planCombine(sheet, base.text.trim() ?: null, refresh, params.force)]
         }
         .branch { _sheet, plan ->
@@ -346,4 +393,20 @@ workflow {
     }
 
     DATASET_VCFS(VQSR.out.fragments, VQSR.out.header, dataset_plans.todo)
+
+    // seqr VCFs: from each seqr_vcf dataset's VCF, made by this run or already there
+    def seqr_plans = dataset_plans.done
+        .map { _vds, plan -> [plan, plan.final_output] }
+        .mix(DATASET_VCFS.out.vcf)
+        .filter { plan, _vcf -> plan.seqr_output }
+        .branch { plan, _vcf ->
+            done: plan.seqr_done
+            todo: true
+        }
+
+    seqr_plans.done.subscribe { plan, _vcf ->
+        log.info("${plan.seqr_output} already exists: the ${plan.dataset} seqr VCF is already done")
+    }
+
+    REHEADER_VCF(seqr_plans.todo)
 }

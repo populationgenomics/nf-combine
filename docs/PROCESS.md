@@ -159,6 +159,25 @@ A plan is made for each dataset in the sample sheet. It covers that dataset's SG
    htsjdk stop reading when they reach one, even in the middle of a file. The marker is removed from every piece, then
    added once at the very end.
 
+## 8. seqr VCFs (`REHEADER_VCF`)
+
+Only for the datasets listed in `seqr_vcf`. Each one's VCF is written a second time, beside the first, as
+`<dataset bucket>/vcf/<seq type>/<name>_seqr.vcf.bgz`. It has the same rows, but each sample is named by its
+participant's primary external ID (the sample sheet's `participant` column) rather than its SG ID. It's built from
+the dataset's VCF whether this run made it or an earlier one did. Datasets whose seqr VCF index already exists are
+skipped.
+
+The task copies the dataset's VCF to a scratch directory on its own disk, renames the samples with
+`bcftools reheader`, checks that every sample was renamed, indexes the result, and uploads the VCF and then its index.
+The scratch directory is deleted when the task ends, whether it succeeds or not.
+
+*Why scratch, not the work directory:* anything in the work directory is kept, so a copy of every dataset VCF would
+pile up there. *Why the index goes last:* if it exists, the VCF upload before it finished.
+
+*Why it's checked before combining:* a seqr VCF needs every SG in the dataset to have a participant ID, and no two
+SGs to share one, or two samples would have the same name. The run checks this as soon as the sample sheet is built,
+before any cluster starts. A dataset listed in `seqr_vcf` with no SGs in the sheet only gets a warning.
+
 ---
 
 ## Run records

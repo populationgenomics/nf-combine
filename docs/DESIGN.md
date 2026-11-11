@@ -33,6 +33,7 @@ written to its own bucket, so the service account needs write access to those bu
 | `refresh`                                               | optional list of SG IDs to refresh. Refreshing is the removal of gVCF content, followed by re-adding from the same source path. Typically done when the SG should be included, but a gVCF was truncated/malformed                                                           |
 | `genome_combiner_intervals`, `exome_combiner_intervals` | the regions BED the combiner partitions on, chosen by `sequencing_type`. Both default to variant-balanced BEDs under `gs://cpg-common-main/rd_references/` (1000 intervals for genome, 500 for exome). The run refuses to start if the one for its sequencing type is unset |
 | `genome_densify_intervals`, `exome_densify_intervals`   | the coarser BEDs (500 for genome, 100 for exome) the VDS is read on when densifying. They set the dense MT's partitions, and so the number of shards in each VCF export. Must be `gs://` paths                                                                              |
+| `seqr_vcf`                                              | optional list of datasets whose VCF is also written with participant IDs as the sample names, as `<name>_seqr.vcf.bgz`, indexed. Each of their SGs needs a participant ID, and no two can share one                                                                         |
 | `vqsr`                                                  | default `true`. If `false`, the run stops after densifying                                                                                                                                                                                                                  |
 | `vqsr_fragments_per_job`, `annotate_fragments_per_job`  | how many shards each VQSR task, and each task copying VQSR's results onto the whole fragments, handles. Both default to 100                                                                                                                                                 |
 | `snp_filter_level`, `indel_filter_level`, `vqsr_*`      | VQSR's truth-sensitivity filter levels (99.8 and 99.0), and its resource VCFs, as in `cpg-flow-seqr-loader`                                                                                                                                                                |
@@ -59,7 +60,9 @@ written to its own bucket, so the service account needs write access to those bu
                          dense MT, sites-only VCF shards (two layouts), whole-VCF fragments
                                                      │ --vqsr
                                                      ▼
-                         VQSR ─▶ VQSR sites-only VCF, annotated whole fragments ─ DATASET_VCFS ─▶ one VCF per dataset
+                         VQSR ─▶ VQSR sites-only VCF, annotated whole fragments ─ DATASET_VCFS ─▶ one VCF per dataset                                                                                                        │ --seqr_vcf
+                                                                                                        ▼
+                                                                         REHEADER_VCF ─▶ participant-named VCF per listed dataset
 ```
 
 Everything that can fail cheaply fails before any cluster starts.
@@ -74,7 +77,8 @@ Everything that can fail cheaply fails before any cluster starts.
 - Each SG must have exactly one distinct active gVCF path. Several analyses of the same path count as one.
   An SG with none, or with several different paths, fails the run, and every offender is listed in one
   error.
-- Each row records the SG's participant's primary external ID (`participant`).
+- Each row records the SG's participant's primary external ID (`participant`). It names the samples in the
+  seqr VCFs (`seqr_vcf`).
 - Each row records the SG's own dataset (its project, without `-test`). It splits the VQSR-annotated VCF into
   one VCF per dataset (`DATASET_VCFS`).
 - The sheet is named for the VDS it makes:
@@ -175,6 +179,8 @@ as the nth sites-only shard. Hail gives each export's shards different names, so
 With `vqsr` on, and unless the VDS's VQSR VCF already exists, the `VQSR` subworkflow filters the sites-only
 exports and copies the results onto the whole fragments. The `DATASET_VCFS` subworkflow then writes one VCF per
 dataset in the sheet, to `<dataset bucket>/vcf/<sequencing_type>/<name>.vcf.bgz`, skipping any that already exist.
+For the datasets in `seqr_vcf`, `REHEADER_VCF` writes a copy beside it, `<name>_seqr.vcf.bgz`, with each sample
+renamed from its SG ID to its participant ID, and indexed.
 See [PROCESS.md](PROCESS.md) for the steps and the reasons behind them.
 
 ### 7. Run records
