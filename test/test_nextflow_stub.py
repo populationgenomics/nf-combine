@@ -357,7 +357,7 @@ def test_a_vds_whose_dataset_vcfs_all_exist_is_not_densified(run, tmp_path):
 def vqsr_vcf(out: Path) -> Path:
     """Where the VQSR VCF of the run's VDS is kept: <output_root>/tmp for local runs, named for the VDS."""
     name = vds_name(SGS, [])
-    return out / 'tmp' / 'nf-combine' / 'vqsr' / name / f'{name}.vcf.bgz'
+    return out / 'tmp' / 'nf-combine' / 'vqsr' / f'{name}.vcf.bgz'
 
 
 def test_a_vds_whose_vqsr_vcf_exists_is_subset_not_densified(run, tmp_path):

@@ -110,7 +110,7 @@ Everything that can fail cheaply fails before any cluster starts.
 
 - Whether every dataset VCF of the VDS (`<dataset bucket>/joint_vcf/<sequencing_type>/<name>.vcf.bgz`) exists. If
   they all do, the VDS isn't densified (logged), and so there's no VQSR either.
-- Whether the VDS's VQSR VCF (`<temp bucket>/nf-combine/vqsr/<name>/<name>.vcf.bgz`) exists. If it does, the VDS
+- Whether the VDS's VQSR VCF (`<temp bucket>/nf-combine/vqsr/<name>.vcf.bgz`) exists. If it does, the VDS
   isn't densified (logged), and the missing dataset VCFs are cut from it.
 
 ### 3. Combine (`COMBINE`, `bin/submit_hail.py`, `bin/combiner.py`)
