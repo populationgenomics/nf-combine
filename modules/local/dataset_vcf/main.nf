@@ -41,7 +41,7 @@ def stripEof() {
 // the annotated fragments' header (text) -> the dataset's header, bgzipped without an EOF block, and the EOF block
 process SUBSET_HEADER {
     tag "${plan.name}"
-    container params.bcftools_container
+    container params.cpg_container
 
     input:
     tuple val(plan), path(header)
@@ -69,7 +69,7 @@ process SUBSET_HEADER {
 // no sites left is empty
 process SUBSET_FRAGMENTS {
     tag "${plan.name} chunk ${chunk}"
-    container params.bcftools_container
+    container params.cpg_container
 
     input:
     tuple val(plan), val(chunk), path(fragments)
@@ -108,7 +108,7 @@ process SUBSET_FRAGMENTS {
  */
 process REHEADER_VCF {
     tag "${plan.name}"
-    container params.bcftools_container
+    container params.cpg_container
     // the VCF twice (before and after reheadering), and 20 GB to spare
     disk { 1.GB * ((2 * file(vcf).size()).intdiv(1000000000) + 21) }
 

@@ -10,7 +10,7 @@
 
 process COMPOSE_SITES_ONLY {
     tag "${plan.name}"
-    container params.gcloud_container
+    container params.cpg_container
 
     input:
     tuple val(plan), path(manifest)
@@ -60,7 +60,7 @@ process COMPOSE_SITES_ONLY {
  */
 process COMPOSE_FRAGMENTS {
     tag "${plan.name}"
-    container params.gcloud_container
+    container params.cpg_container
 
     input:
     tuple val(plan), val(fragments), val(compose_dir)

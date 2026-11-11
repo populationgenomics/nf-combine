@@ -68,9 +68,7 @@ params {
     vqsr_axiom_poly: String
 
     cpg_container: String
-    gcloud_container: String
     gatk_container: String
-    bcftools_container: String
 }
 
 /*

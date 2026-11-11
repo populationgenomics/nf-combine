@@ -239,7 +239,7 @@ process APPLY_VQSR {
 // (conf/base.config)
 process CONCAT_VCFS {
     tag "${plan.name}"
-    container params.bcftools_container
+    container params.cpg_container
 
     input:
     tuple val(plan), path(vcfs), path(tbis)
@@ -273,7 +273,7 @@ process CONCAT_VCFS {
  */
 process ANNOTATE_FRAGMENTS {
     tag "${key} chunk ${chunk}"
-    container params.bcftools_container
+    container params.cpg_container
 
     input:
     tuple val(key), val(chunk), path(fragments), path(fragment_tbis), path(vqsr_vcfs), path(vqsr_tbis)
