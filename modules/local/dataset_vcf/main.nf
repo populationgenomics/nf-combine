@@ -154,3 +154,34 @@ process REHEADER_VCF {
     echo "would reheader ${vcf} with participant IDs, to ${plan.seqr_output}"
     """
 }
+
+/*
+ * Registers a dataset's VCF, made by this run, in the dataset's own Metamist project, as a dataset_vcf analysis linked
+ * to every SG in it (plan.sgs). registration holds the run's sequencing_type and ar_guid. A retry only repeats the
+ * registration: the VCF is already written.
+ */
+process REGISTER_DATASET_VCF {
+    tag "${plan.name}"
+    container params.cpg_container
+
+    input:
+    tuple val(plan), val(vcf)
+    val registration
+
+    output:
+    tuple val(plan), val(vcf)
+
+    script:
+    registerDatasetVcf(plan, vcf, registration, '')
+
+    stub:
+    """
+    echo ${registerDatasetVcf(plan, vcf, registration, '--dry')}
+    """
+}
+
+def registerDatasetVcf(plan, vcf, registration, dry) {
+    def meta = ["sequencing_type=${registration.sequencing_type}", "ar-guid=${registration.ar_guid}"]
+    "python3 -m cpg_utils.metamist_registration ${dry} --project ${plan.metamist_project} --output ${vcf} " +
+        "--type dataset_vcf --sgs ${plan.sgs.join(' ')} --meta ${meta.join(' ')}"
+}

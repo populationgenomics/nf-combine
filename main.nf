@@ -3,7 +3,8 @@
  * built on an ephemeral Dataproc cluster on top of the newest earlier VDS, and registered in Metamist.
  * The VDS is then densified, on a second cluster, into sites-only VCF shards, and those are filtered with VQSR.
  * VQSR's results are copied onto the whole (genotypes-inclusive) VCF, which is then split into one VCF per dataset.
- * Datasets in seqr_vcf also get a copy of theirs with the samples named by participant, not SG.
+ * Each dataset's VCF is registered in its Metamist project. Datasets in seqr_vcf also get a copy of theirs with the
+ * samples named by participant, not SG.
  */
 
 include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
@@ -11,7 +12,7 @@ include { COMBINE } from './modules/local/combine'
 include { DENSIFY } from './modules/local/densify'
 include { VQSR } from './subworkflows/local/vqsr'
 include { DATASET_VCFS } from './subworkflows/local/dataset_vcfs'
-include { REHEADER_VCF } from './modules/local/dataset_vcf'
+include { REHEADER_VCF ; REGISTER_DATASET_VCF } from './modules/local/dataset_vcf'
 
 /*
  * Types only: the defaults are in nextflow.config, which conf/base.config reads before this script is parsed.
@@ -106,8 +107,13 @@ def runDir() {
     "${datasetRoot()}/combiner_samplesheets/${params.arGuid}"
 }
 
+// a dataset's Metamist project, at the run's access level
+def metamistProjectOf(dataset) {
+    params.accessLevel == 'test' ? "${dataset}-test" : dataset
+}
+
 def metamistProject() {
-    params.accessLevel == 'test' ? "${params.dataset}-test" : params.dataset
+    metamistProjectOf(params.dataset)
 }
 
 // gs://bucket/path for cloud paths (Path.toString() drops the scheme), a plain path locally. No trailing slash: a
@@ -258,6 +264,7 @@ def planVqsr(densify_plan) {
  * One VCF per dataset with SGs in the sheet: the VQSR-annotated whole VCF, cut down to the dataset's SGs and the
  * sites where they have a non-reference allele. Written to the dataset's bucket (<output_root>/<dataset> for local
  * runs), named for the VDS. If it exists, an earlier run finished it. Returns [[VDS name, plan]].
+ * metamist_project is the dataset's own project, where its VCF is registered.
  *
  * A seqr_vcf dataset's plan also has seqr_output, beside the VCF: the same VCF, with each SG's sample renamed to
  * its participant ID (checkSeqrParticipants()). Its index is written last, so if that exists, the VCF is done.
@@ -271,6 +278,7 @@ def planDatasetVcfs(sheet) {
         def plan = [
             name: "${vds}_${dataset}",
             dataset: dataset,
+            metamist_project: metamistProjectOf(dataset),
             // sorted, as the sample order is the VCF's
             sgs: rows.collect { row -> row.sg_id }.toSorted(),
             final_output: output,
@@ -391,6 +399,9 @@ workflow {
     }
 
     DATASET_VCFS(VQSR.out.fragments, VQSR.out.header, dataset_plans.todo)
+
+    // only the VCFs this run made: an existing one was registered by the run that made it
+    REGISTER_DATASET_VCF(DATASET_VCFS.out.vcf.filter { _plan, _vcf -> params.register }, registration)
 
     // seqr VCFs: from each seqr_vcf dataset's VCF, made by this run or already there
     def seqr_plans = dataset_plans.done

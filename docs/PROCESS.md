@@ -158,6 +158,11 @@ A plan is made for each dataset in the sample sheet. It covers that dataset's SG
    *Why the end-of-file markers are removed:* bcftools ends every compressed file with an end-of-file marker. GATK and
    htsjdk stop reading when they reach one, even in the middle of a file. The marker is removed from every piece, then
    added once at the very end.
+4. **Register the dataset's VCF (`REGISTER_DATASET_VCF`).** If registration is on, the VCF is recorded in the
+   dataset's own Metamist project as a `dataset_vcf` analysis, linked to every SG in it, with the sequencing type and
+   ar-guid as metadata. A failed registration is retried once.
+   *Why only VCFs this run made:* a VCF that already exists was registered by the run that made it, so registering it
+   again would duplicate the record.
 
 ## 8. seqr VCFs (`REHEADER_VCF`)
 
