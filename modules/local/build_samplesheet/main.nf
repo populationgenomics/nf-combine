@@ -32,7 +32,7 @@ process BUILD_SAMPLESHEET {
     }
     else {
         """
-        printf 'sg_id\\tgvcf\\tdataset\\n' > stub_0.tsv
+        printf 'sg_id\\tgvcf\\tdataset\\tparticipant\\n' > stub_0.tsv
         touch base_vds.txt
         """
     }

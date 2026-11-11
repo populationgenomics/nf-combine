@@ -21,7 +21,7 @@ def sg(sg_id: str, analyses: list[dict] | None = None, project: str = PROJECT, *
     return {
         'id': sg_id,
         'type': 'genome',
-        'sample': {'project': {'name': project}},
+        'sample': {'project': {'name': project}, 'participant': {'externalId': f'{sg_id}-EXT'}},
         'analyses': [gvcf(sg_id)] if analyses is None else analyses,
     } | fields
 

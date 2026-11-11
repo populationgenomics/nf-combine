@@ -32,7 +32,7 @@ def sheet(tmp_path) -> Path:
     rows = []
     for sg_id in SGS:
         touch(data / f'{sg_id}.g.vcf.gz.tbi')
-        rows.append({'sg_id': sg_id, 'gvcf': touch(data / f'{sg_id}.g.vcf.gz'), 'dataset': PROJECT})
+        rows.append({'sg_id': sg_id, 'gvcf': touch(data / f'{sg_id}.g.vcf.gz'), 'dataset': PROJECT, 'participant': f'{sg_id}-EXT'})
     path = tmp_path / 'sheet.tsv'
     write_sheet(rows, str(path))
     return path

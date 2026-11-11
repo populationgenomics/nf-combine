@@ -74,6 +74,7 @@ Everything that can fail cheaply fails before any cluster starts.
 - Each SG must have exactly one distinct active gVCF path. Several analyses of the same path count as one.
   An SG with none, or with several different paths, fails the run, and every offender is listed in one
   error.
+- Each row records the SG's participant's primary external ID (`participant`).
 - Each row records the SG's own dataset (its project, without `-test`). It splits the VQSR-annotated VCF into
   one VCF per dataset (`DATASET_VCFS`).
 - The sheet is named for the VDS it makes:

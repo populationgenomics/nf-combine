@@ -23,7 +23,7 @@ The run checks its settings before doing any work:
 ## 2. Build the sample sheet (`BUILD_SAMPLESHEET`)
 
 One Metamist query fetches the cohorts, their sequencing groups (SGs) and each SG's gVCF. The result is a table with
-one row per SG: its ID, its gVCF path and the dataset it belongs to.
+one row per SG: its ID, its gVCF path, the dataset it belongs to and its participant's primary external ID.
 
 - Missing, inactive or empty cohorts stop the run.
 - An SG that appears in several cohorts is kept once.
