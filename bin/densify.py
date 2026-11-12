@@ -121,7 +121,18 @@ def annotate_and_split(mt: hl.MatrixTable) -> hl.MatrixTable:
     mt = mt.drop('gvcf_info')
 
     logger.info('Splitting multiallelics, in a sparse way')
-    return select_split_allele(hl.experimental.sparse_split_multi(mt))
+    mt = select_split_allele(hl.experimental.sparse_split_multi(mt))
+
+    # raw AC/AF/AN for this row's alt, from the split GT. call_stats puts the ref allele first, so drop it.
+    # AC stays as default_compute_info's adj count; AC_raw is replaced by the same count from the split GT
+    call_stats = hl.agg.call_stats(mt.GT, mt.alleles)
+    return mt.annotate_rows(
+        info=mt.info.annotate(
+            AC_raw=call_stats.AC[1:],
+            AF=call_stats.AF[1:],
+            AN=call_stats.AN,
+        ),
+    )
 
 
 def select_split_allele(mt: hl.MatrixTable) -> hl.MatrixTable:
