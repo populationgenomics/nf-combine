@@ -55,6 +55,7 @@ params {
     dataproc_num_local_ssds: Integer
     dataproc_max_age: Integer
     dataproc_max_idle: Integer
+    dataproc_hail_version: String
 
     vqsr: Boolean
     vqsr_fragments_per_job: Integer
@@ -353,6 +354,7 @@ workflow {
         num_local_ssds: params.dataproc_num_local_ssds,
         max_age: params.dataproc_max_age,
         max_idle: params.dataproc_max_idle,
+        hail_version: params.dataproc_hail_version,
         combiner_intervals: combinerIntervals(),
         densify_intervals: densifyIntervals(),
         branch_factor: params.branch_factor,

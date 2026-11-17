@@ -30,6 +30,12 @@ from cpg_utils.dataproc_runner import HailDataprocCluster, install_sigterm_clean
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HAIL_VERSION = '0.2.140'
+HAIL_VERSION_MAP = {
+    '0.2.140': '3.0.1-debian13',
+    '0.2.138': '2.2-debian12',
+}
+
 
 def split_argv(argv: list[str]) -> tuple[list[str], list[str]]:
     """Splits the command line at the first `--` into the submitter's arguments and the Hail script's.
@@ -100,6 +106,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument('--temp-bucket', required=True, help='GCS bucket for Dataproc temp files')
     parser.add_argument('--autoscaling-policy', default=None, help='Autoscaling policy ID or full resource URI')
     parser.add_argument('--labels', nargs='*', default=[], help='Cluster labels as key=value pairs')
+    parser.add_argument(
+        '--hail-version',
+        default=DEFAULT_HAIL_VERSION,
+        choices=sorted(HAIL_VERSION_MAP),
+        help='Hail version; picks the matching Dataproc image from HAIL_VERSION_MAP',
+    )
 
     # cluster sizing and lifecycle, forwarded to HailDataprocCluster
     parser.add_argument('--master-type', required=True)
@@ -160,6 +172,8 @@ def run_on_cluster(args: argparse.Namespace, hail_args: list[str]) -> dict:
         num_local_ssds=args.num_local_ssds,
         service_account=args.service_account,
         internal_ip_only=False,
+        hail_version=args.hail_version,
+        hail_image=HAIL_VERSION_MAP[args.hail_version],
     )
 
     # none of these start the cluster

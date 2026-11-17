@@ -19,6 +19,7 @@ def clusterArgs(cluster) {
         "--max-idle ${cluster.max_idle}",
         "--boot-disk-size ${cluster.boot_disk_size_gb}",
         "--num-local-ssds ${cluster.num_local_ssds}",
+        "--hail-version ${cluster.hail_version}",
         "--service-account ${cluster.service_account}",
         "--labels ar-guid=${cluster.ar_guid} compute-category=dataproc dataset=${cluster.dataset}",
     ].findAll { arg -> arg }.join(' \\\n        ')
