@@ -258,6 +258,7 @@ def test_real_commands_as_rendered(run, sheet, tmp_path):
     assert f'base_vds={base}' in own
     assert after(own, '--temp-bucket') == 'gs://cpg-ds-main-tmp'
     assert '--preemptible-secondary-workers' in own
+    assert after(own, '--hail-version') == '0.2.140'
     assert ' --labels ar-guid=local-test compute-category=dataproc dataset=ds ' in submit
 
     assert after(hail, '--samplesheet') == f'{name}.tsv'
