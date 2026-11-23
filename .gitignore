@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Go away PyCharm
+.idea
+
+# Nextflow
+.nextflow/
+.nextflow.log*
+work/
+results/
